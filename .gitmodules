@@ -1,0 +1,3 @@
+[submodule "librispeech_asr_dummy"]
+	path = librispeech_asr_dummy
+	url = https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy

@@ -1,0 +1,5 @@
+# Override jupyter in Github language stats for more accurate estimate of repo code languages
+# reference: https://github.com/github/linguist/blob/master/docs/overrides.md#generated-code
+*.ipynb linguist-generated
+vcsdl_dataset/1249120_13842059_18087389.wav filter=lfs diff=lfs merge=lfs -text
+MODEL_TEST_REPOERT filter=lfs diff=lfs merge=lfs -text

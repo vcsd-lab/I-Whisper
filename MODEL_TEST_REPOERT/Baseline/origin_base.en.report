@@ -1,0 +1,174 @@
+================================================== R E P O R T ==================================================
+> Baseline Model (FP)
+Setups:
+> INT-FFT
+> INT-MEL
+> INT LOG
+=v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v=
+Overview of Sentences:
+> Probability of Extreme Outliers Sentences (WER>100%): 0.00%
+> Number of Extreme Outliers Sentences (WER>100%): 0
+> Number of Sentences:   10
+Audio Length:
+audio 0 time is: 15.0
+audio 1 time is: 12.625
+audio 2 time is: 2.835
+audio 3 time is: 5.06
+audio 4 time is: 4.475
+audio 5 time is: 4.3
+audio 6 time is: 8.14
+audio 7 time is: 7.06
+audio 8 time is: 4.135
+audio 9 time is: 3.535
+=^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^=
+
+=v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v=
+Detailed WER Alignment Results:
+=== SENTENCE 1 ===
+
+REF: THERE IS IRON THEY SAY IN ALL OUR BLOOD AND A GRAIN OR TWO PERHAPS IS GOOD BUT HIS HE MAKES ME HARSHLY FEEL HAS GOT A LITTLE TOO MUCH OF STEEL  ANON
+HYP: THERE IS IRON THEY SAY IN ALL OUR BLOOD AND A GRAIN OF TWO PERHAPS IS GOOD BUT HIS HE MAKES ME HARSHLY FEEL HAS GOT A LITTLE TOO MUCH OF STEEL ALONE
+                                                          S                                                                                             S
+
+=== SENTENCE 2 ===
+
+REF: MARGARET SAID MISTER HALE AS HE RETURNED FROM SHOWING HIS  GUEST DOWNSTAIRS I COULD NOT HELP WATCHING YOUR FACE WITH SOME ANXIETY WHEN MISTER THORNTON MADE HIS CONFESSION OF HAVING BEEN A  SHOP BOY
+HYP: MARGARET SAID MISTER HALE AS HE RETURNED FROM SHOWING HIS GUESTS DOWNSTAIRS I COULD NOT HELP WATCHING YOUR FACE WITH SOME ANXIETY WHEN MISTER THORNTON MADE HIS CONFESSION OF HAVING BEEN A SHOCK BOY
+                                                                    S                                                                                                                                S    
+
+=== SENTENCE 3 ===
+
+REF: YOU DO NOT MEAN THAT YOU THOUGHT ME SO SILLY
+HYP: YOU DO NOT MEAN THAT YOU THOUGHT WE SO SILLY
+                                       S         
+
+=== SENTENCE 4 ===
+
+REF: I REALLY LIKED THAT ACCOUNT OF HIMSELF ***** BETTER  THAN ANYTHING ELSE HE SAID
+HYP: I REALLY  LIKE THAT ACCOUNT OF HIMSELF WHICH     IS WHERE ANYTHING ELSE HE SAID
+                  S                             I      S     S                      
+
+=== SENTENCE 5 ===
+
+REF: HIS STATEMENT OF HAVING BEEN A  SHOP BOY WAS THE THING I LIKED BEST OF ALL
+HYP: HIS STATEMENT OF HAVING BEEN A SHOCK BOY WAS THE THING I LIKED BEST OF ALL
+                                        S                                      
+
+=== SENTENCE 6 ===
+
+REF: YOU WHO WERE ALWAYS ACCUSING PEOPLE OF BEING SHOPPY AT HELSTONE
+HYP: YOU *** WERE ALWAYS ACCUSING PEOPLE OF BEING CHOPPY AT   HOSTEN
+           D                                           S           S
+
+=== SENTENCE 7 ===
+
+REF: I DO NOT THINK MISTER HALE YOU HAVE DONE QUITE RIGHT IN INTRODUCING SUCH A PERSON TO US WITHOUT TELLING US WHAT HE HAD BEEN
+HYP: I DO NOT THINK MISTER HALE YOU HAVE DONE QUITE RIGHT IN INTRODUCING SUCH A PERSON TO US WITHOUT TELLING US WHAT HE HAD BEEN
+                                                                                                                                
+
+=== SENTENCE 8 ===
+
+REF: I REALLY WAS VERY MUCH AFRAID OF SHOWING HIM HOW MUCH SHOCKED    I WAS   AT SOME PARTS OF WHAT HE SAID
+HYP: I REALLY WAS VERY MUCH AFRAID OF SHOWING HIM HOW MUCH   SHOCK THAT WAS LIKE SOME  PART OF WHAT HE SAID
+                                                                 S    S        S          S                
+
+=== SENTENCE 9 ===
+
+REF: ** HIS  FATHER DYING IN MISERABLE CIRCUMSTANCES
+HYP: IT  IS FORWARD DYING IN MISERABLE CIRCUMSTANCES
+      I   S       S                                 
+
+=== SENTENCE 10 ===
+
+REF: WHY IT MIGHT HAVE BEEN IN THE WORK HOUSE
+HYP: WHY IT MIGHT HAVE BEEN IN THE WORK HOUSE
+                                             
+
+=== SUMMARY ===
+number of sentences: 10
+substitutions=17 deletions=1 insertions=2 hits=160
+
+mer=11.11%
+wil=19.65%
+wip=80.35%
+wer=11.24%
+
+=^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^=
+
+=v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v=
+Detailed WER Alignment Results - Normal Cases (WER<=100%):
+
+=== SENTENCE 1 ===
+
+REF: THERE IS IRON THEY SAY IN ALL OUR BLOOD AND A GRAIN OR TWO PERHAPS IS GOOD BUT HIS HE MAKES ME HARSHLY FEEL HAS GOT A LITTLE TOO MUCH OF STEEL  ANON
+HYP: THERE IS IRON THEY SAY IN ALL OUR BLOOD AND A GRAIN OF TWO PERHAPS IS GOOD BUT HIS HE MAKES ME HARSHLY FEEL HAS GOT A LITTLE TOO MUCH OF STEEL ALONE
+                                                          S                                                                                             S
+
+=== SENTENCE 2 ===
+
+REF: MARGARET SAID MISTER HALE AS HE RETURNED FROM SHOWING HIS  GUEST DOWNSTAIRS I COULD NOT HELP WATCHING YOUR FACE WITH SOME ANXIETY WHEN MISTER THORNTON MADE HIS CONFESSION OF HAVING BEEN A  SHOP BOY
+HYP: MARGARET SAID MISTER HALE AS HE RETURNED FROM SHOWING HIS GUESTS DOWNSTAIRS I COULD NOT HELP WATCHING YOUR FACE WITH SOME ANXIETY WHEN MISTER THORNTON MADE HIS CONFESSION OF HAVING BEEN A SHOCK BOY
+                                                                    S                                                                                                                                S    
+
+=== SENTENCE 3 ===
+
+REF: YOU DO NOT MEAN THAT YOU THOUGHT ME SO SILLY
+HYP: YOU DO NOT MEAN THAT YOU THOUGHT WE SO SILLY
+                                       S         
+
+=== SENTENCE 4 ===
+
+REF: I REALLY LIKED THAT ACCOUNT OF HIMSELF ***** BETTER  THAN ANYTHING ELSE HE SAID
+HYP: I REALLY  LIKE THAT ACCOUNT OF HIMSELF WHICH     IS WHERE ANYTHING ELSE HE SAID
+                  S                             I      S     S                      
+
+=== SENTENCE 5 ===
+
+REF: HIS STATEMENT OF HAVING BEEN A  SHOP BOY WAS THE THING I LIKED BEST OF ALL
+HYP: HIS STATEMENT OF HAVING BEEN A SHOCK BOY WAS THE THING I LIKED BEST OF ALL
+                                        S                                      
+
+=== SENTENCE 6 ===
+
+REF: YOU WHO WERE ALWAYS ACCUSING PEOPLE OF BEING SHOPPY AT HELSTONE
+HYP: YOU *** WERE ALWAYS ACCUSING PEOPLE OF BEING CHOPPY AT   HOSTEN
+           D                                           S           S
+
+=== SENTENCE 7 ===
+
+REF: I DO NOT THINK MISTER HALE YOU HAVE DONE QUITE RIGHT IN INTRODUCING SUCH A PERSON TO US WITHOUT TELLING US WHAT HE HAD BEEN
+HYP: I DO NOT THINK MISTER HALE YOU HAVE DONE QUITE RIGHT IN INTRODUCING SUCH A PERSON TO US WITHOUT TELLING US WHAT HE HAD BEEN
+                                                                                                                                
+
+=== SENTENCE 8 ===
+
+REF: I REALLY WAS VERY MUCH AFRAID OF SHOWING HIM HOW MUCH SHOCKED    I WAS   AT SOME PARTS OF WHAT HE SAID
+HYP: I REALLY WAS VERY MUCH AFRAID OF SHOWING HIM HOW MUCH   SHOCK THAT WAS LIKE SOME  PART OF WHAT HE SAID
+                                                                 S    S        S          S                
+
+=== SENTENCE 9 ===
+
+REF: ** HIS  FATHER DYING IN MISERABLE CIRCUMSTANCES
+HYP: IT  IS FORWARD DYING IN MISERABLE CIRCUMSTANCES
+      I   S       S                                 
+
+=== SENTENCE 10 ===
+
+REF: WHY IT MIGHT HAVE BEEN IN THE WORK HOUSE
+HYP: WHY IT MIGHT HAVE BEEN IN THE WORK HOUSE
+                                             
+
+=== SUMMARY ===
+number of sentences: 10
+substitutions=17 deletions=1 insertions=2 hits=160
+
+mer=11.11%
+wil=19.65%
+wip=80.35%
+wer=11.24%
+
+=^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^=
+
+=v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v=
+No Outlier Results (WER>100%)
+=^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^=

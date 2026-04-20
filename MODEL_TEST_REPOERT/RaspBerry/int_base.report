@@ -1,0 +1,58 @@
+================================================== R E P O R T ==================================================
+Setups:
+> Online-Quant Model (FP Scale)
+> INT-FFT
+> INT-MEL
+> INT LOG
+=v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v=
+Overview of Sentences:
+> Probability of Extreme Outliers Sentences (WER>100%): 0.00%
+> Number of Extreme Outliers Sentences (WER>100%): 0
+> Number of Sentences:    1
+Audio Length:
+audio 0 time is: 15.0
+=^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^=
+
+=v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v=
+Detailed WER Alignment Results:
+=== SENTENCE 1 ===
+
+REF: THERE   IS IRON THEY SAY IN ALL OUR BLOOD AND A GRAIN OR TWO PERHAPS IS GOOD BUT HIS HE MAKES ME HARSHLY FEEL HAS GOT A LITTLE TOO MUCH OF STEEL  ANON
+HYP:   THE ZION **** THEY SAY IN ALL OUR BLOOD AND A GRAIN OF TWO PERHAPS IS GOOD BUT *** HE MAKES ME HARSHLY FEEL  AS *** A LITTLE TOO MUCH OF STEEL ANDON
+         S    S    D                                        S                           D                            S   D                                S
+
+=== SUMMARY ===
+number of sentences: 1
+substitutions=5 deletions=3 insertions=0 hits=25
+
+mer=24.24%
+wil=36.87%
+wip=63.13%
+wer=24.24%
+
+=^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^=
+
+=v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v=
+Detailed WER Alignment Results - Normal Cases (WER<=100%):
+
+=== SENTENCE 1 ===
+
+REF: THERE   IS IRON THEY SAY IN ALL OUR BLOOD AND A GRAIN OR TWO PERHAPS IS GOOD BUT HIS HE MAKES ME HARSHLY FEEL HAS GOT A LITTLE TOO MUCH OF STEEL  ANON
+HYP:   THE ZION **** THEY SAY IN ALL OUR BLOOD AND A GRAIN OF TWO PERHAPS IS GOOD BUT *** HE MAKES ME HARSHLY FEEL  AS *** A LITTLE TOO MUCH OF STEEL ANDON
+         S    S    D                                        S                           D                            S   D                                S
+
+=== SUMMARY ===
+number of sentences: 1
+substitutions=5 deletions=3 insertions=0 hits=25
+
+mer=24.24%
+wil=36.87%
+wip=63.13%
+wer=24.24%
+
+=^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^=
+
+=v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v==v=
+No Outlier Results (WER>100%)
+=^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^==^=
+Total inference time for 1 samples: 128.04 seconds
