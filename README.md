@@ -118,3 +118,6 @@ This repository contains code derived from or adapted from
 under the MIT License. We retain the original OpenAI copyright and license
 notice where applicable.
 
+Modifications and additional code for I-Whisper are copyright of
+Video and Communication System Design Lab, National Cheng Kung University.
+
