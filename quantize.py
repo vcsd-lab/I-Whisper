@@ -1,5 +1,5 @@
 import torch
-import whisper
+import i_whisper
 from datasets import load_dataset
 import numpy as np
 import os
@@ -10,14 +10,14 @@ import logging
 from termcolor import colored
 
 import inspect
-from whisper.model import *
-from whisper import MemTracker
+from i_whisper.model import *
+from i_whisper import MemTracker
 import argparse
 
 import random
 import jiwer
-from whisper.model_quant import ResidualAttentionBlock_quantized, LayerNorm_quantized, Linear_quantized, GELU_quantized
-from whisper.model_int import Build_from_Quant
+from i_whisper.model_quant import ResidualAttentionBlock_quantized, LayerNorm_quantized, Linear_quantized, GELU_quantized
+from i_whisper.model_int import Build_from_Quant
 
 import re
 class Expand(jiwer.AbstractTransform):
@@ -163,7 +163,7 @@ def smooth_gelu_fcs(mlp0, gelu, mlp2, act_scales, alpha):
 
 if __name__ != "__main__":
     exit(0)
-parser = argparse.ArgumentParser(description='PyTorch ViT Training')
+parser = argparse.ArgumentParser(description='I-Whisper quantization program')
 parser.add_argument('--model', default='base', type=str, help='model type (size of model)')
 parser.add_argument('--fakequant', default=False, action='store_true', help='whether to test fake quantized model')
 parser.add_argument('--baseline', default=False, action='store_true')
@@ -237,16 +237,17 @@ gpu_tracker.track()
 
 '''Load original Whisper model and dataset'''
 # Load audio dataset & ground truth
-ds_name = "LibriSpeech/test_other"
+ds_name = "LibriSpeech.test-other/test_other"
+# ds_name = "LibriSpeech.test-clean/test-clean"
 ds = load_dataset(ds_name)
 # Load original Whisper model (base)
 if args.baseline or args.smooth or args.calibrate:
     logger.info(f"Original Whisper {args.model} Loaded")
-    model_o = whisper.load_model(args.model)
+    model_o = i_whisper.load_model(args.model, download_root="CKPT")
     total_size = sum(p.numel() for p in model_o.state_dict().values())
     logger.info(f"Whisper {args.model} Param Num: {total_size}")
 # Decoding options
-options = whisper.DecodingOptions(fp16=False, language="en")
+options = i_whisper.DecodingOptions(fp16=False, language="en")
 gpu_tracker.track()
 
 '''Calibration settings'''
@@ -258,7 +259,7 @@ random.seed(0)
 if (args.smooth or args.calibrate):
     '''Load original Whisper model and prepare for quantization'''
     logger.info(f"Whisper_quantized {args.model} Loaded")
-    model = whisper.load_model_quantized(args.model, download_root="CKPT")
+    model = i_whisper.load_model_quantized(args.model, download_root="CKPT")
     total_size = sum(p.numel() for p in model.state_dict().values())
     logger.info(f"Whisper_quantized {args.model} Param Num: {total_size}")
 
@@ -276,10 +277,10 @@ if (args.smooth or args.calibrate):
             logger.debug(f"Smooth Calibrate {i+1} / {smooth_calibrate_samples}, Data Sample index: {x}")
             audio = ds['train'][x]["audio"]["array"]
             audio = np.float32(audio)
-            audio = whisper.pad_or_trim(audio)
+            audio = i_whisper.pad_or_trim(audio)
             # mel = whisper.log_mel_spectrogram_fft(audio, n_mels=model.dims.n_mels).to(model.device)
-            mel = whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
-            result = whisper.decode(model, mel, options)
+            mel = i_whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
+            result = i_whisper.decode(model, mel, options)
 
         logger.info(f"Smooth Calibrate DONE")
         model.stop_observe_channel_max()
@@ -324,10 +325,10 @@ if (args.smooth or args.calibrate):
             quant_calibre_loop.set_description_str(f"Quant  Calibrate, Data Sample index: {x}")
             
             audio = np.float32(audio)
-            audio = whisper.pad_or_trim(audio)
-            mel = whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
+            audio = i_whisper.pad_or_trim(audio)
+            mel = i_whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
             # mel = whisper.log_mel_spectrogram_fft(audio, n_mels=model_o.dims.n_mels).to(model_o.device)
-            result = whisper.decode(model, mel, options)
+            result = i_whisper.decode(model, mel, options)
 
         logger.info(f"Quant Calibrate DONE")
         model.model_close_calibrate()
@@ -347,7 +348,7 @@ if (args.smooth or args.calibrate):
         logger.warning("MODEL FULL QUANT CHECK: FAIL")
 else:
     '''Load quantized Whisper model'''
-    model = whisper.load_model_quantized("base", device=args.device, quantize=True)
+    model = i_whisper.load_model_quantized("base", device=args.device, quantize=True)
     if model.check_quantized(logger):
         logger.info("MODEL FULL QUANT CHECK: PASS")
     else:
@@ -378,11 +379,11 @@ if torch.cuda.is_available():
     gpu_tracker.clear_cache()
     gpu_tracker.track()
 
-PreProcessor = whisper.audio.PreProcessor(device="cpu", n_mels=model.dims.n_mels)
+PreProcessor = i_whisper.audio.PreProcessor(device="cpu", n_mels=model.dims.n_mels)
 try:
     PreProcessor.load_param()
 except:
-    PreProcessor = whisper.audio.PreProcessor(device="cpu", n_mels=model.dims.n_mels, param_init=True) 
+    PreProcessor = i_whisper.audio.PreProcessor(device="cpu", n_mels=model.dims.n_mels, param_init=True) 
     PreProcessor.save_param()
 
 if args.test:
@@ -428,10 +429,10 @@ if args.test:
             audio = ds['train'][i]["audio"]["array"]
 
             audio_lengths.append(audio.shape[0]/16000)
-            audio = torch.from_numpy(whisper.pad_or_trim(audio))  # INT16 range
+            audio = torch.from_numpy(i_whisper.pad_or_trim(audio))  # INT16 range
             # mel = PreProcessor.log_mel_spectrum(audio).to(model.device)
-            # mel = whisper.log_mel_spectrogram_fft(audio, n_mels=model.dims.n_mels).to(model.device)
-            mel = whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
+            # mel = i_whisper.log_mel_spectrogram_fft(audio, n_mels=model.dims.n_mels).to(model.device)
+            mel = i_whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
 
             # Reading Ground Truth
             AUDIO_PATH = ds['train'][i]["audio"]["path"]
@@ -444,13 +445,13 @@ if args.test:
             test_loop.set_description_str(f"Test Sample {i}:{GT_PATH}")
 
             # quantized model transcription
-            result = whisper.decode(model, mel, options)
+            result = i_whisper.decode(model, mel, options)
             # add result to TEXT list
             TEXT.append(result.text)
 
             if args.baseline:
                 # original model transcription
-                result_o = whisper.decode(model_o, mel, options)
+                result_o = i_whisper.decode(model_o, mel, options)
                 # add result to TEXT_O list
                 TEXT_O.append(result_o.text)
 
@@ -505,10 +506,10 @@ if args.test:
         audio = ds['train'][i]["audio"]["array"]
 
         audio_lengths.append(audio.shape[0]/16000)
-        audio = torch.from_numpy(whisper.pad_or_trim(audio))  # INT16 range
+        audio = torch.from_numpy(i_whisper.pad_or_trim(audio))  # INT16 range
         # mel = PreProcessor.log_mel_spectrum(audio).to(model.device)
-        # mel = whisper.log_mel_spectrogram_fft(audio, n_mels=model.dims.n_mels).to(model.device)
-        mel = whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
+        # mel = i_whisper.log_mel_spectrogram_fft(audio, n_mels=model.dims.n_mels).to(model.device)
+        mel = i_whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
 
         # Reading Ground Truth
         AUDIO_PATH = ds['train'][i]["audio"]["path"]
@@ -521,7 +522,7 @@ if args.test:
         test_loop.set_description_str(f"Test Sample {i}:{GT_PATH}")
 
         # quantized model transcription
-        result = whisper.decode(model, mel, options)
+        result = i_whisper.decode(model, mel, options)
         # add result to TEXT list
         TEXT.append(result.text)
 
@@ -535,7 +536,7 @@ else:
     print(f"Total number of int_model parameters: {total_params}")
 
     '''Load Audio & PreProcessing'''
-    audio = whisper.load_audio(os.path.join('vcsdl_dataset', args.filename))
+    audio = i_whisper.load_audio(os.path.join('vcsdl_dataset', args.filename))
     print(f"Original audio length: {audio.shape[0]/16000:.2f} seconds")
     audio_list = []
     while audio.shape[0] > 30*16000:
@@ -543,11 +544,11 @@ else:
         audio_list.append( audio[:30*16000] )
         audio = audio[30*16000:]
     # the last clip (less than 30 seconds)
-    audio = whisper.pad_or_trim(audio)
+    audio = i_whisper.pad_or_trim(audio)
     audio_list.append(audio)
     del audio
     print(f"Original Audio is cut into {len(audio_list)} 30-second clips: ")
     for idx, audio in enumerate(audio_list):
         mel = PreProcessor.log_mel_spectrum(audio).to(model.device)
-        result = whisper.decode(model, mel, options)
+        result = i_whisper.decode(model, mel, options)
         print(f"clip{idx}: {result.text}")

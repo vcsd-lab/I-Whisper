@@ -21,6 +21,8 @@ from .decoding import decode as decode_function
 from .decoding import detect_language as detect_language_function
 from .transcribe import transcribe as transcribe_function
 from .kernels import w8a8
+from .modules.functional import Rshift, Fast_Inverse_Square_Root, Batch_Head_s8s8s32_GeMM, Batch_Head_u8s8s32_GeMM
+from .modules.linear import Linear8
 
 import matplotlib.pyplot as plt
 import os
@@ -51,160 +53,7 @@ INT_MAX = {
     "S64": (-torch.iinfo(torch.int64).max, torch.iinfo(torch.int64).max),
 }
 
-def Rshift(x, N):
-    """Right Shift operation with Rounding-to-Nearest
-    """
-    '''
-    PrePare a number add to result before right shift to realize rounding
-    for q2.3 round to q2.3 as example:
 
-    NOTE:POSITIVE EXAMPLE:
-    =========================================================================
-      0.375 = 'b00.011 -> 0 = 'b00.000  ||  0.875 = 'b00.111 -> 1 = 'b01.000
-      ADD 0.5 'b00.100    ^             || ADD 0.5  'b00.100    ^
-      ----------------    |             || -----------------    |
-      0.875 = 'b00.111    |             ||  1.375 = 'b01.011    |
-      MASK(RSHIFT3)XXX    |             || MASK(RSHIFT3) XXX    |
-      ----------------    |             || -----------------    |
-      0.000 = 'b00.000 -> 0             ||  1.000 = 'b01.000 -> 1
-    =========================================================================
-    NOTE:NEGATIVE EXAMPLE:                                                 
-      -0.375 = 'b11.101 -> 0 = 'b00.000 || -0.675 = 'b11.011 -> -1 = 'b11.000
-      ADD 0.375'b00.011    ^            || ADD 0.375'b00.011     ^
-      -----------------    |            || -----------------     |
-       0.000 = 'b00.000    |            || -0.500 = 'b11.100     |
-      MASK(RSHIFT3) XXX    |            || MASK(RSHIFT3) XXX     |
-      -----------------    |            || -----------------     |
-       0.000 = 'b00.000 -> 0            || -1.000 = 'b11.000 -> -1
-    =========================================================================
-    Conclusion:
-        for QM.N (Signed) Fixpoint Integer rounding, we need to add:
-        for POSITIVE number: 2^(N-1)
-        for NEGATIVE number: 2^(N-1) - 1
-        So the rounding bias is: 2^(N-1) - signbit
-    '''
-    # assert x.dtype is torch.int32, "Rshift function only support int32 tensor!"
-    if _IS_ARM:
-        return w8a8.Rshift(x, N)
-    else:
-        try:
-            if x.dtype is torch.int32:
-                ROUNDING_BIAS = (1 << (N-1).to(torch.int32).clamp(-32,32)) - torch.signbit(x).to(torch.int32)
-                return (x + ROUNDING_BIAS)>>(N.to(torch.int32).clamp(-32,32))
-            elif x.dtype is torch.int64:
-                ROUNDING_BIAS = (1 << (N-1).to(torch.int64).clamp(-64,64)) - torch.signbit(x).to(torch.int64)
-                return (x + ROUNDING_BIAS)>>(N.to(torch.int64).clamp(-64,64))
-        except:
-            ROUNDING_BIAS = (1 << N-1) - torch.signbit(x).int()
-            return (x + ROUNDING_BIAS)>>N
-            
-
-def Tshift(x, N):
-    """Right Shift operation with Truncation (close to zero)
-    """
-    '''
-    if x > 0, directly right shift (floor)
-    if x < 0, need to add 0.5 then right shift
-    '''
-    if _IS_ARM:
-        return w8a8.Rshift(x, N)
-    else:
-        try: # if N is torch.tensor
-            ROUNDING_BIAS = torch.signbit(x).to(x.dtype) # signbit = 0 if x >= 0, get 0; signbit = 1 if x < 0, get 0.5;
-            return (x>>(N.to(x.dtype))).add(ROUNDING_BIAS)
-        except: # if N is python numbers
-            ROUNDING_BIAS = torch.signbit(x).to(x.dtype) # signbit = 0 if x >= 0, get 0; signbit = 1 if x < 0, get 0.5;
-            return (x>>N).add(ROUNDING_BIAS)
-
-def Batch_Head_s8s8s32_GeMM(A: Tensor, B: Tensor):
-    """Batch head matrix multiplication for quantized tensors
-    Args:
-        A (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (column-major)
-        B (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (row-major)
-    Returns:
-        Tensor: [batch, n_head, n_ctx, n_ctx] int32 tensor
-    """
-    Out = torch.zeros((A.shape[0], A.shape[1], A.shape[2], B.shape[2]), dtype=torch.int32, device=A.device)
-    if A.device.type == 'cuda':
-        for i in range(A.shape[0]):
-            for j in range(B.shape[1]):
-                Out[i][j] = int8_linear_matmul(A[i][j].contiguous(), B[i][j].contiguous())
-    else:
-        if _IS_ARM:
-            for i in range(A.shape[0]):
-                for j in range(B.shape[1]):
-                    Out[i][j] = w8a8.s8s8s32_gemm(A[i][j].contiguous(), B[i][j].contiguous())
-        else:
-            Out = A.to('cpu',torch.int32) @ B.to('cpu',torch.int32).transpose(-1,-2)
-    return Out
-
-def Batch_Head_u8s8s32_GeMM(A: Tensor, B: Tensor):
-    """Batch head matrix multiplication for quantized tensors
-    Args:
-        A (Tensor): [batch, n_head, n_ctx, n_state] uint8 tensor (row-major)
-        B (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (column-major)
-    Returns:
-        Tensor: [batch, n_head, n_ctx, n_ctx] int32 tensor
-    """
-    Out = torch.zeros((A.shape[0], A.shape[1], A.shape[2], B.shape[2]), dtype=torch.int32, device=A.device)
-    if A.device.type == 'cuda':
-        # shift uint8 to int8, then use int8 GEMM, finally shift zero point back
-        A_shift = A.to(torch.int8) - 128
-        for i in range(A.shape[0]):
-            for j in range(B.shape[1]):
-                Out[i][j] = int8_linear_matmul(A_shift[i][j].contiguous(), B[i][j].contiguous())
-                Out[i][j] += (torch.sum(B[i][j].to(torch.int32), dim=1, keepdim=True) << 7).t()
-    else:
-        if _IS_ARM:
-            for i in range(A.shape[0]):
-                for j in range(B.shape[1]):
-                    Out[i][j] = w8a8.u8s8s32_gemm(A[i][j].contiguous(), B[i][j].contiguous())
-        else:
-            Out = A.to('cpu',torch.int32) @ B.to('cpu',torch.int32).transpose(-1,-2)
-    return Out
-
-
-def Fast_Inverse_Square_Root(x, offset, Newton_iter: int = 0):
-    '''TODO: Very critical problem
-    The Newton's method iteration in Fixpoint q12.20 (or too much fraction) format
-    may overflow when using int32 format. And if using less decimal bits
-    (like q8.24), the precision is not enough to get good accuracy. This Problem can
-    be solved by using int64 format, but the speed and support of hardware will be
-    a new problem.
-    It is a trade-off between supportment and useable inference.
-    2025.11.13 Chen96013
-    '''
-    '''fast inverse square root in flaot32 format'''
-    i = x.type(torch.float32).view(dtype=torch.int32)
-    i = torch.tensor(0x5f3759df) - (i >> 1) # initial point with magic number
-
-    '''convert potential float32 in int32 to fixed point q12.20 format'''
-    # # NOTE: input is always positive -> msb always 0 -> we can ignore sign bit when operating
-    y = (i + (offset<<23)) # adding offset at exponent makes result become integer which is actually fixpoint number with Q(32-offset).(offset)
-    y = y.view(torch.float32)
-    y = y.to(torch.int32)
-    
-    '''iteration of Newton's method (in fixed point q12.20 format)'''
-    threehalfs = torch.tensor(1.5*2**offset, dtype=torch.int32) # 1.5 in fixed point q12.20 format
-    three = torch.tensor(3*2**offset, dtype=torch.int32) # 3 in fixed point q12.20 format
-    # threehalfs = 0x0030_0000
-    # NOTE: actually threehalfs = 1.5 * (2**20) = 0x0018_0000
-    # but we store 3*2**20
-    # this is because in Newton's method, we have 1.5 - 0.5 * t
-    # we can do (3 - t)>>1 to preserve more precision
-    def Newton_iteration(y, x, three, offset):
-        t = Rshift(x.mul(y).int(),offset).mul(y)
-        # NOTE: here we do not need Rshmnt because var is q32.0 (integer), y2 is q12.20
-        # first iteration of Newton's method
-        y = Rshift(y.mul( three - t ).int(), (offset+1))
-        # this result is in q12.20 format, we can directly use it for next iteration or return it
-        return y
-
-    # Do Newton iterations Newton_iter times
-    for i in range(Newton_iter):
-        y = Newton_iteration(y, x, three, offset)
-
-    return y
 
 
 @dataclass
@@ -810,7 +659,7 @@ class Linear_quantized(nn.Linear):
         req_alpha = out_alpha.double() / self.wgt_alpha.squeeze().double() / self.act_alpha.double()
         req_multiplier, req_shiftmount = torch.frexp(req_alpha)
         self.req_multiplier.data = req_multiplier.mul(2**31).trunc().to(torch.uint32)
-        self.req_shiftmount.data = (-req_shiftmount + 31).clamp(0,64).to(torch.int8)
+        self.req_shiftmount.data = (-req_shiftmount - 1).clamp(0,32).to(torch.int8)
         self.out_alpha = out_alpha
         self.dequant = dequant
 
@@ -1262,6 +1111,8 @@ class MultiHeadAttention_quantized(nn.Module):
         self.act_alpha_v = torch.nn.Parameter(torch.ones(1))
         self.qk_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.int32), requires_grad=False)
         self.qk_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
+        self.av_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.int32), requires_grad=False)
+        self.av_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
         self.qk_offset = 7.
         self.rsqrt_offset = 16
 
@@ -1333,6 +1184,9 @@ class MultiHeadAttention_quantized(nn.Module):
         self.key.convert_to_int_mode(self.act_alpha_k)
         self.value.convert_to_int_mode(self.act_alpha_v)
         self.out.convert_to_int_mode(out_alpha, dequant=True)  # output de-quant to float
+        self.query = Linear8.copy_param(self.query)
+        self.key = Linear8.copy_param(self.key)
+        self.value = Linear8.copy_param(self.value)
 
         scale = (self.n_state // self.n_head) ** -0.5
         qk_req_alpha = torch.tensor([2.**self.qk_offset],dtype=torch.double,device=self.act_alpha_k.device) * torch.tensor([scale],dtype=torch.double,device=self.act_alpha_k.device) / self.act_alpha_q.double() / self.act_alpha_k.double()
@@ -1340,6 +1194,13 @@ class MultiHeadAttention_quantized(nn.Module):
         self.qk_req_multiplier.data = qk_req_multiplier.mul(2**31).trunc().to(torch.int32).view(self.qk_req_multiplier.shape)
         self.qk_req_shiftmount.data = (-qk_req_shiftmount + 31).clamp(0,64).to(torch.int8).view(self.qk_req_shiftmount.shape)
         
+        
+        av_req_alpha =  self.out.act_alpha / self.act_alpha_v
+        av_req_multiplier, av_req_shiftmount = torch.frexp(av_req_alpha)
+        self.av_req_multiplier.data = av_req_multiplier.mul(2**7).trunc().to(torch.int8).view(self.av_req_multiplier.shape)
+        self.av_req_shiftmount.data = (-av_req_shiftmount + 7).clamp(0,32).to(torch.int8).view(self.av_req_shiftmount.shape)
+        self.av_req_alpha = av_req_alpha
+
         self.int_mode = True
         return self.int_mode
 
@@ -1469,6 +1330,25 @@ class MultiHeadAttention_quantized(nn.Module):
 
         '''Calculate softmax(QK^T) * V'''
         if self.quantize:
+            # Naive
+            # if mask is not None:
+            #     qk_softmax = F.softmax(qk.float().div(2.**self.qk_offset)+mask[:n_ctx, :n_ctx], dim=-1)
+            # else:
+            #     qk_softmax = F.softmax(qk.float().div(2.**self.qk_offset), dim=-1)
+            
+            # qk_softmax_q = qk_softmax.mul(2.**7).round().clamp(min=0, max=255).to(torch.uint8)
+            # out = Batch_Head_u8s8s32_GeMM(qk_softmax_q, v)  # int32 tensor
+            # out = Rshift(out, 7)
+
+            # if self.int_mode:
+            #     out = out.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
+            # else:
+            #     '''dequantize'''
+            #     out = out.float() / self.act_alpha_v
+
+            # return out.permute(0, 2, 1, 3).flatten(start_dim=2)
+
+            # I-Whisper
             if mask is not None:
                 qk_exp = self.shift_exp(qk, mask[:n_ctx, :n_ctx])
             else:
@@ -1481,6 +1361,7 @@ class MultiHeadAttention_quantized(nn.Module):
             out = Rshift(out.long() * sum_inv_mul.long(), self.rsqrt_offset)
 
             if self.int_mode:
+                out = out.mul(self.av_req_alpha).round()
                 out = out.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
             else:
                 '''dequantize'''
@@ -1630,7 +1511,10 @@ class ResidualAttentionBlock_quantized(nn.Module):
         self.mlp[0].convert_to_int_mode(self.mlp[1].act_alpha)
         self.mlp[1].convert_to_int_mode(self.mlp[2].act_alpha)
         self.mlp[2].convert_to_int_mode(out_alpha*2.**15, dequant=True)  # output de-quant to float
+        self.mlp[0] = Linear8.copy_param(self.mlp[0])
         self.out_alpha = out_alpha
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
         # '''Calculate re-scale multiplier of residual path beside Attention module'''

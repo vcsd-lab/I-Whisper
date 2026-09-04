@@ -19,6 +19,8 @@ from .decoding import detect_language as detect_language_function
 from .transcribe import transcribe as transcribe_function
 from .model_quant import *
 from .kernels import w8a8
+from .modules.linear import Linear_int
+from .modules.functional import Rshift, Fast_Inverse_Square_Root, Batch_Head_s8s8s32_GeMM, Batch_Head_u8s8s32_GeMM
 
 import matplotlib.pyplot as plt
 import os
@@ -40,155 +42,155 @@ __all__ = [
     ]
 
 
-def Rshift(x:torch.Tensor, N):
-    """Right Shift operation with Rounding-to-Nearest
-    """
-    '''
-    PrePare a number add to result before right shift to realize rounding
-    for q2.3 round to q2.3 as example:
+# def Rshift(x:torch.Tensor, N):
+#     """Right Shift operation with Rounding-to-Nearest
+#     """
+#     '''
+#     PrePare a number add to result before right shift to realize rounding
+#     for q2.3 round to q2.3 as example:
 
-    NOTE:POSITIVE EXAMPLE:
-    =========================================================================
-      0.375 = 'b00.011 -> 0 = 'b00.000  ||  0.875 = 'b00.111 -> 1 = 'b01.000
-      ADD 0.5 'b00.100    ^             || ADD 0.5  'b00.100    ^
-      ----------------    |             || -----------------    |
-      0.875 = 'b00.111    |             ||  1.375 = 'b01.011    |
-      MASK(RSHIFT3)XXX    |             || MASK(RSHIFT3) XXX    |
-      ----------------    |             || -----------------    |
-      0.000 = 'b00.000 -> 0             ||  1.000 = 'b01.000 -> 1
-    =========================================================================
-    NOTE:NEGATIVE EXAMPLE:                                                 
-      -0.375 = 'b11.101 -> 0 = 'b00.000 || -0.675 = 'b11.011 -> -1 = 'b11.000
-      ADD 0.375'b00.011    ^            || ADD 0.375'b00.011     ^
-      -----------------    |            || -----------------     |
-       0.000 = 'b00.000    |            || -0.500 = 'b11.100     |
-      MASK(RSHIFT3) XXX    |            || MASK(RSHIFT3) XXX     |
-      -----------------    |            || -----------------     |
-       0.000 = 'b00.000 -> 0            || -1.000 = 'b11.000 -> -1
-    =========================================================================
-    Conclusion:
-        for QM.N (Signed) Fixpoint Integer rounding, we need to add:
-        for POSITIVE number: 2^(N-1)
-        for NEGATIVE number: 2^(N-1) - 1
-        So the rounding bias is: 2^(N-1) - signbit
-    '''
-    assert x.dtype is torch.int32, "Rshift function only support int32 tensor!"
-    if _IS_ARM:
-        return w8a8.Rshift(x, N)
-    else:
-        try:
-            ROUNDING_BIAS = (1 << (N-1).to(torch.int32).clamp(-32,32)) - torch.signbit(x).int()
-            return (x + ROUNDING_BIAS)>>N.to(torch.int32).clamp(-32,32)
-        except:
-            ROUNDING_BIAS = (1 << (N-1)) - torch.signbit(x).int()
-            return (x + ROUNDING_BIAS)>>N
-
-
-
-def Batch_Head_s8s8s32_GeMM(A: Tensor, B: Tensor):
-    """Batch head matrix multiplication for quantized tensors
-    Args:
-        A (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (column-major)
-        B (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (row-major)
-    Returns:
-        Tensor: [batch, n_head, n_ctx, n_ctx] int32 tensor
-    """
-    Out = torch.zeros((A.shape[0], A.shape[1], A.shape[2], B.shape[2]), dtype=torch.int32, device=A.device)
-    if A.device.type == 'cuda':
-        for i in range(A.shape[0]):
-            for j in range(B.shape[1]):
-                Out[i][j] = int8_linear_matmul(A[i][j].contiguous(), B[i][j].contiguous())
-    else:
-        if _IS_ARM:
-            for i in range(A.shape[0]):
-                for j in range(B.shape[1]):
-                    Out[i][j] = w8a8.s8s8s32_gemm(A[i][j].contiguous(), B[i][j].contiguous())
-        else:
-            Out = A.to('cpu',torch.int32) @ B.to('cpu',torch.int32).transpose(-1,-2)
-    return Out
-
-
-def Batch_Head_u8s8s32_GeMM(A: Tensor, B: Tensor):
-    """Batch head matrix multiplication for quantized tensors
-    Args:
-        A (Tensor): [batch, n_head, n_ctx, n_state] uint8 tensor (row-major)
-        B (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (column-major)
-    Returns:
-        Tensor: [batch, n_head, n_ctx, n_ctx] int32 tensor
-    """
-    Out = torch.zeros((A.shape[0], A.shape[1], A.shape[2], B.shape[2]), dtype=torch.int32, device=A.device)
-    if A.device.type == 'cuda':
-        # shift uint8 to int8, then use int8 GEMM, finally shift zero point back
-        A_shift = A.to(torch.int8) - 128
-        for i in range(A.shape[0]):
-            for j in range(B.shape[1]):
-                Out[i][j] = int8_linear_matmul(A_shift[i][j].contiguous(), B[i][j].contiguous())
-                Out[i][j] += (torch.sum(B[i][j].to(torch.int32), dim=1, keepdim=True) << 7).t()
-    else:
-        if _IS_ARM:
-            for i in range(A.shape[0]):
-                for j in range(B.shape[1]):
-                    Out[i][j] = w8a8.u8s8s32_gemm(A[i][j].contiguous(), B[i][j].contiguous())
-        else:
-            Out = A.to('cpu',torch.int32) @ B.to('cpu',torch.int32).transpose(-1,-2)
-    return Out
+#     NOTE:POSITIVE EXAMPLE:
+#     =========================================================================
+#       0.375 = 'b00.011 -> 0 = 'b00.000  ||  0.875 = 'b00.111 -> 1 = 'b01.000
+#       ADD 0.5 'b00.100    ^             || ADD 0.5  'b00.100    ^
+#       ----------------    |             || -----------------    |
+#       0.875 = 'b00.111    |             ||  1.375 = 'b01.011    |
+#       MASK(RSHIFT3)XXX    |             || MASK(RSHIFT3) XXX    |
+#       ----------------    |             || -----------------    |
+#       0.000 = 'b00.000 -> 0             ||  1.000 = 'b01.000 -> 1
+#     =========================================================================
+#     NOTE:NEGATIVE EXAMPLE:                                                 
+#       -0.375 = 'b11.101 -> 0 = 'b00.000 || -0.675 = 'b11.011 -> -1 = 'b11.000
+#       ADD 0.375'b00.011    ^            || ADD 0.375'b00.011     ^
+#       -----------------    |            || -----------------     |
+#        0.000 = 'b00.000    |            || -0.500 = 'b11.100     |
+#       MASK(RSHIFT3) XXX    |            || MASK(RSHIFT3) XXX     |
+#       -----------------    |            || -----------------     |
+#        0.000 = 'b00.000 -> 0            || -1.000 = 'b11.000 -> -1
+#     =========================================================================
+#     Conclusion:
+#         for QM.N (Signed) Fixpoint Integer rounding, we need to add:
+#         for POSITIVE number: 2^(N-1)
+#         for NEGATIVE number: 2^(N-1) - 1
+#         So the rounding bias is: 2^(N-1) - signbit
+#     '''
+#     assert x.dtype is torch.int32, "Rshift function only support int32 tensor!"
+#     if _IS_ARM:
+#         return w8a8.Rshift(x, N)
+#     else:
+#         try:
+#             ROUNDING_BIAS = (1 << (N-1).to(torch.int32).clamp(-32,32)) - torch.signbit(x).int()
+#             return (x + ROUNDING_BIAS)>>N.to(torch.int32).clamp(-32,32)
+#         except:
+#             ROUNDING_BIAS = (1 << (N-1)) - torch.signbit(x).int()
+#             return (x + ROUNDING_BIAS)>>N
 
 
 
-def Fast_Inverse_Square_Root(x, offset, Newton_iter: int = 0, overflow_prevent_offset: int = 0):
-    '''TODO: Very critical problem
-    The Newton's method iteration in Fixpoint q12.20 (or too much fraction) format
-    may overflow when using int32 format. And if using less decimal bits
-    (like q8.24), the precision is not enough to get good accuracy. This Problem can
-    be solved by using int64 format, but the speed and support of hardware will be
-    a new problem.
-    It is a trade-off between supportment and useable inference.
-    2025.11.13 Chen96013
-    '''
-    '''fast inverse square root in flaot32 format'''
-    zero_pos = (x == 0)
-    i = x.type(torch.float32).view(dtype=torch.int32)
-    i = int(0x5f3759df) - (i >> 1) # initial point with magic number
+# def Batch_Head_s8s8s32_GeMM(A: Tensor, B: Tensor):
+#     """Batch head matrix multiplication for quantized tensors
+#     Args:
+#         A (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (column-major)
+#         B (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (row-major)
+#     Returns:
+#         Tensor: [batch, n_head, n_ctx, n_ctx] int32 tensor
+#     """
+#     Out = torch.zeros((A.shape[0], A.shape[1], A.shape[2], B.shape[2]), dtype=torch.int32, device=A.device)
+#     if A.device.type == 'cuda':
+#         for i in range(A.shape[0]):
+#             for j in range(B.shape[1]):
+#                 Out[i][j] = int8_linear_matmul(A[i][j].contiguous(), B[i][j].contiguous())
+#     else:
+#         if _IS_ARM:
+#             for i in range(A.shape[0]):
+#                 for j in range(B.shape[1]):
+#                     Out[i][j] = w8a8.s8s8s32_gemm(A[i][j].contiguous(), B[i][j].contiguous())
+#         else:
+#             Out = A.to('cpu',torch.int32) @ B.to('cpu',torch.int32).transpose(-1,-2)
+#     return Out
 
-    '''convert potential float32 in int32 to fixed point q12.20 format'''
-    # try new convert method
-    # add offset to exponent directly then convert to fixed point (int32)
-    y = (i + (offset<<23))
-    y = y.view(torch.float32)
-    y = y.to(torch.int32)
-    # without this, inverse square root of zero is infinity, here we set it to one directly
-    # this means do not need normalize when input (variation) is zero
+
+# def Batch_Head_u8s8s32_GeMM(A: Tensor, B: Tensor):
+#     """Batch head matrix multiplication for quantized tensors
+#     Args:
+#         A (Tensor): [batch, n_head, n_ctx, n_state] uint8 tensor (row-major)
+#         B (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (column-major)
+#     Returns:
+#         Tensor: [batch, n_head, n_ctx, n_ctx] int32 tensor
+#     """
+#     Out = torch.zeros((A.shape[0], A.shape[1], A.shape[2], B.shape[2]), dtype=torch.int32, device=A.device)
+#     if A.device.type == 'cuda':
+#         # shift uint8 to int8, then use int8 GEMM, finally shift zero point back
+#         A_shift = A.to(torch.int8) - 128
+#         for i in range(A.shape[0]):
+#             for j in range(B.shape[1]):
+#                 Out[i][j] = int8_linear_matmul(A_shift[i][j].contiguous(), B[i][j].contiguous())
+#                 Out[i][j] += (torch.sum(B[i][j].to(torch.int32), dim=1, keepdim=True) << 7).t()
+#     else:
+#         if _IS_ARM:
+#             for i in range(A.shape[0]):
+#                 for j in range(B.shape[1]):
+#                     Out[i][j] = w8a8.u8s8s32_gemm(A[i][j].contiguous(), B[i][j].contiguous())
+#         else:
+#             Out = A.to('cpu',torch.int32) @ B.to('cpu',torch.int32).transpose(-1,-2)
+#     return Out
+
+
+
+# def Fast_Inverse_Square_Root(x, offset, Newton_iter: int = 0, overflow_prevent_offset: int = 0):
+#     '''TODO: Very critical problem
+#     The Newton's method iteration in Fixpoint q12.20 (or too much fraction) format
+#     may overflow when using int32 format. And if using less decimal bits
+#     (like q8.24), the precision is not enough to get good accuracy. This Problem can
+#     be solved by using int64 format, but the speed and support of hardware will be
+#     a new problem.
+#     It is a trade-off between supportment and useable inference.
+#     2025.11.13 Chen96013
+#     '''
+#     '''fast inverse square root in flaot32 format'''
+#     zero_pos = (x == 0)
+#     i = x.type(torch.float32).view(dtype=torch.int32)
+#     i = int(0x5f3759df) - (i >> 1) # initial point with magic number
+
+#     '''convert potential float32 in int32 to fixed point q12.20 format'''
+#     # try new convert method
+#     # add offset to exponent directly then convert to fixed point (int32)
+#     y = (i + (offset<<23))
+#     y = y.view(torch.float32)
+#     y = y.to(torch.int32)
+#     # without this, inverse square root of zero is infinity, here we set it to one directly
+#     # this means do not need normalize when input (variation) is zero
 
     
-    '''iteration of Newton's method (in fixed point q12.20 format)'''
-    three = torch.tensor(3*2**offset, dtype=torch.int32) # 3 in fixed point q12.20 format
-    # threehalfs = 0x0030_0000
-    # NOTE: actually threehalfs = 1.5 * (2**20) = 0x0018_0000
-    # but we store 3*2**20
-    # this is because in Newton's method, we have 1.5 - 0.5 * t
-    # we can do (3 - t)>>1 to preserve more precision
+#     '''iteration of Newton's method (in fixed point q12.20 format)'''
+#     three = torch.tensor(3*2**offset, dtype=torch.int32) # 3 in fixed point q12.20 format
+#     # threehalfs = 0x0030_0000
+#     # NOTE: actually threehalfs = 1.5 * (2**20) = 0x0018_0000
+#     # but we store 3*2**20
+#     # this is because in Newton's method, we have 1.5 - 0.5 * t
+#     # we can do (3 - t)>>1 to preserve more precision
 
-    # NOTE: @overflow_prvent_offset this is a hack to prevent overflow during multiplication
-    # RShift both y and threehalfs-t by overflow_prevent_offset
-    # so that the multiplication result won't overflow int32
-    # and the final result is LShifted back by overflow_prevent_offset
-    # the RShift is represented as RShift lesser when point regression
-    # A * B >> offset
-    #          ^ this is point regression, recover the point by right shifting offset bits
+#     # NOTE: @overflow_prvent_offset this is a hack to prevent overflow during multiplication
+#     # RShift both y and threehalfs-t by overflow_prevent_offset
+#     # so that the multiplication result won't overflow int32
+#     # and the final result is LShifted back by overflow_prevent_offset
+#     # the RShift is represented as RShift lesser when point regression
+#     # A * B >> offset
+#     #          ^ this is point regression, recover the point by right shifting offset bits
 
-    def Newton_iteration(y, x, three, offset):
-        t = Rshift(x.mul(y).int(),offset).mul(y)
-        # NOTE: here we do not need Rshmnt because var is q32.0 (integer), y2 is q12.20
-        # first iteration of Newton's method
-        y = Rshift(y.mul( three - t ).int(), (offset+1))
-        # this result is in q12.20 format, we can directly use it for next iteration or return it
-        return y
+#     def Newton_iteration(y, x, three, offset):
+#         t = Rshift(x.mul(y).int(),offset).mul(y)
+#         # NOTE: here we do not need Rshmnt because var is q32.0 (integer), y2 is q12.20
+#         # first iteration of Newton's method
+#         y = Rshift(y.mul( three - t ).int(), (offset+1))
+#         # this result is in q12.20 format, we can directly use it for next iteration or return it
+#         return y
 
-    # Do Newton iterations Newton_iter times
-    for i in range(Newton_iter):
-        y = Newton_iteration(y, x, three, offset)
+#     # Do Newton iterations Newton_iter times
+#     for i in range(Newton_iter):
+#         y = Newton_iteration(y, x, three, offset)
 
-    return y
+#     return y
 
 
 @dataclass
@@ -378,96 +380,96 @@ class LayerNorm_int(nn.LayerNorm):
 
 
 
-class Linear_int(nn.Linear):
-    def __init__(
-        self,
-        in_features: int,
-        out_features: int,
-        bias: bool = True,
-        encoder: bool = False,
-        attn : bool = False,
-        cross_attn : bool = False,
-        mlp0: bool = False,
-        mlp2: bool = False,
-        asym: bool = True,
-        Bout: int = 8,
-        debug: bool = False
-    ):
-        '''inherit from nn.Linear'''
-        super().__init__(in_features, out_features, bias)
-        '''meta parameters'''
-        self.encoder = encoder          # if this linear layer is in transformer encoder
-        self.attn = attn                # if this linear layer is in attention module
-        self.cross_attn = cross_attn    # if this linear layer is in cross-attention module
-        self.mlp0 = mlp0                # if this linear layer is in MLP 1st layer
-        self.mlp2 = mlp2                # if this linear layer is in MLP 2nd layer
-        self.asym = asym                # if use asymmetric quantization for weights
-        self.debug = debug              # debug flag
+# class Linear_int(nn.Linear):
+#     def __init__(
+#         self,
+#         in_features: int,
+#         out_features: int,
+#         bias: bool = True,
+#         encoder: bool = False,
+#         attn : bool = False,
+#         cross_attn : bool = False,
+#         mlp0: bool = False,
+#         mlp2: bool = False,
+#         asym: bool = True,
+#         Bout: int = 8,
+#         debug: bool = False
+#     ):
+#         '''inherit from nn.Linear'''
+#         super().__init__(in_features, out_features, bias)
+#         '''meta parameters'''
+#         self.encoder = encoder          # if this linear layer is in transformer encoder
+#         self.attn = attn                # if this linear layer is in attention module
+#         self.cross_attn = cross_attn    # if this linear layer is in cross-attention module
+#         self.mlp0 = mlp0                # if this linear layer is in MLP 1st layer
+#         self.mlp2 = mlp2                # if this linear layer is in MLP 2nd layer
+#         self.asym = asym                # if use asymmetric quantization for weights
+#         self.debug = debug              # debug flag
 
-        '''Quantization Hyper-parameters (Bit-width of Parameters)'''
-        self.act_bit = 8
-        self.Bout    = Bout
+#         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
+#         self.act_bit = 8
+#         self.Bout    = Bout
 
-        '''Quantization Hyper-parameters (Ranges of Parameters)'''
-        self.act_range = 127    # Signed, 2**(self.act_bit-1)-1
+#         '''Quantization Hyper-parameters (Ranges of Parameters)'''
+#         self.act_range = 127    # Signed, 2**(self.act_bit-1)-1
 
-        '''Quantization Parameters initialization'''
-        if self.asym:
-            self.register_buffer('wgt_zeros', torch.zeros(out_features))
-        self.req_multiplier = torch.nn.Parameter(torch.ones((out_features), dtype=torch.uint8), requires_grad=False)
-        self.req_shiftmount = torch.nn.Parameter(torch.zeros((out_features), dtype=torch.int8), requires_grad=False)
+#         '''Quantization Parameters initialization'''
+#         if self.asym:
+#             self.register_buffer('wgt_zeros', torch.zeros(out_features))
+#         self.req_multiplier = torch.nn.Parameter(torch.ones((out_features), dtype=torch.uint8), requires_grad=False)
+#         self.req_shiftmount = torch.nn.Parameter(torch.zeros((out_features), dtype=torch.int8), requires_grad=False)
         
-        '''weight re-initialization for quantization'''
-        self.weight = nn.Parameter(torch.ones((out_features, in_features), dtype=torch.int8), requires_grad=False)
-        if self.bias is not None:
-            self.bias = nn.Parameter(torch.ones((out_features), dtype=torch.int32), requires_grad=False)
+#         '''weight re-initialization for quantization'''
+#         self.weight = nn.Parameter(torch.ones((out_features, in_features), dtype=torch.int8), requires_grad=False)
+#         if self.bias is not None:
+#             self.bias = nn.Parameter(torch.ones((out_features), dtype=torch.int32), requires_grad=False)
     
 
-    def extra_repr(self) -> str:
-        return f'in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}, encoder={self.encoder}, mlp2={self.mlp2}'
+#     def extra_repr(self) -> str:
+#         return f'in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}, encoder={self.encoder}, mlp2={self.mlp2}'
 
 
-    def forward(self, x: Tensor) -> Tensor:
-        "integer inference (all int computation)"
-        assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
-        '''INT8xINT8 --> INT32 MatMul'''
-        if x.device.type == 'cuda':
-            out = int8_linear_matmul(x.contiguous(), self.weight.contiguous())
+#     def forward(self, x: Tensor) -> Tensor:
+#         "integer inference (all int computation)"
+#         assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
+#         '''INT8xINT8 --> INT32 MatMul'''
+#         if x.device.type == 'cuda':
+#             out = int8_linear_matmul(x.contiguous(), self.weight.contiguous())
             
-        else: # using cpu
-            if _IS_ARM:
-                out = w8a8.s8s8s32_gemm_packed(x.contiguous(), self.weight.contiguous(), self.out_features)
-            else:
-                out = torch.matmul(x.int(), self.weight.int().t())
+#         else: # using cpu
+#             if _IS_ARM:
+#                 out = w8a8.s8s8s32_gemm_packed(x.contiguous(), self.weight.contiguous(), self.out_features)
+#             else:
+#                 out = torch.matmul(x.int(), self.weight.int().t())
         
-        if self.bias is not None:
-            '''bias addition'''
-            out += self.bias
+#         if self.bias is not None:
+#             '''bias addition'''
+#             out += self.bias
         
-        if self.asym:
-            '''Zero-point correction for asymmetric quantization'''
-            out -= torch.sum(x.int(),dim=-1,keepdim=True).to(torch.int32) * self.wgt_zeros.to(torch.int32).reshape(1,1,-1)
+#         if self.asym:
+#             '''Zero-point correction for asymmetric quantization'''
+#             out -= torch.sum(x.int(),dim=-1,keepdim=True).to(torch.int32) * self.wgt_zeros.to(torch.int32).reshape(1,1,-1)
 
-        '''Re-Quantization'''
-        out = Rshift(out.mul(self.req_multiplier.int()), self.req_shiftmount)
+#         '''Re-Quantization'''
+#         out = Rshift(out.mul(self.req_multiplier.int()), self.req_shiftmount)
         
-        if self.Bout <= 8: # re-quant to int8
-            out = out.clamp(min=-(2**(self.Bout-1)), max=(2**(self.Bout-1)-1)).to(torch.int8)
-        elif self.Bout <=16: # De-quant
-            out = out.clamp(min=-(2**(self.Bout-1)), max=(2**(self.Bout-1)-1)).to(torch.int16)
-        elif self.Bout <=32: # De-quant
-            pass
-        else:
-            raise NotImplementedError("re-quant to more than INT64 is un-support!")
+#         if self.Bout <= 8: # re-quant to int8
+#             out = out.clamp(min=-(2**(self.Bout-1)), max=(2**(self.Bout-1)-1)).to(torch.int8)
+#         elif self.Bout <=16: # De-quant
+#             out = out.clamp(min=-(2**(self.Bout-1)), max=(2**(self.Bout-1)-1)).to(torch.int16)
+#         elif self.Bout <=32: # De-quant
+#             pass
+#         else:
+#             raise NotImplementedError("re-quant to more than INT64 is un-support!")
         
-        return out
+#         return out
     
     
-    def pack_weight(self):
-        """Pack weight matrix for faster int8 GEMM
-        """
-        if _IS_ARM:
-            self.weight = nn.Parameter(w8a8.pack_B_to_Bp(self.weight), requires_grad=False)
+#     def pack_weight(self):
+#         """Pack weight matrix for faster int8 GEMM
+#         """
+#         if _IS_ARM:
+#             self.weight = nn.Parameter(w8a8.pack_B_to_Bp(self.weight), requires_grad=False)
 
         
 
@@ -878,6 +880,7 @@ class TextDecoder_int(nn.Module):
         self.req_shiftmount = nn.Parameter(torch.zeros(1, dtype=torch.int8), requires_grad=False)
         self.clf_req_multiplier = torch.nn.Parameter(torch.ones(1, dtype=torch.uint8), requires_grad=False)
         self.clf_req_shiftmount = torch.nn.Parameter(torch.zeros(1, dtype=torch.int8), requires_grad=False)
+        self.act_logits_alpha = torch.nn.Parameter(torch.tensor(1.0))
 
         self.token_embedding = nn.Embedding(n_vocab, n_state)
         self.token_embedding.weight = nn.Parameter(
@@ -928,6 +931,7 @@ class TextDecoder_int(nn.Module):
         # requant logits
         x = Rshift(x.mul(self.clf_req_multiplier.int()), self.clf_req_shiftmount)
         x= x.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
+        x = x.float().div(self.act_logits_alpha)
         return x
 
 

@@ -1,5 +1,5 @@
 import torch
-import whisper
+import i_whisper
 from datasets import load_dataset
 import numpy as np
 import os
@@ -12,14 +12,14 @@ import sys
 from memory_profiler import profile
 
 import inspect
-from whisper.model import *
-from whisper import MemTracker
+from i_whisper.model import *
+from i_whisper import MemTracker
 
 import random
 import jiwer
-from whisper.model import ResidualAttentionBlock
-from whisper.model_quant import ResidualAttentionBlock_quantized, LayerNorm_quantized, Linear_quantized, GELU_quantized
-from whisper.model_int import Build_from_Quant
+from i_whisper.model import ResidualAttentionBlock
+from i_whisper.model_quant import ResidualAttentionBlock_quantized, LayerNorm_quantized, Linear_quantized, GELU_quantized
+from i_whisper.model_int import Build_from_Quant
 
 import re
 class Expand(jiwer.AbstractTransform):
@@ -167,25 +167,25 @@ CKPT_PATH = os.path.join('CKPT', 'consolidated.int.'+args.model+'.pth')
 profiler_stream = LoggerStream(logger, logging.INFO)
 # @profile(stream=profiler_stream)
 def load_preproc():
-    PreProcessor = whisper.audio.PreProcessor(device="cpu", param_init=False)
+    PreProcessor = i_whisper.audio.PreProcessor(device="cpu", param_init=False)
     PreProcessor.load_param()
     return PreProcessor
 PreProcessor = load_preproc()
 
 '''Load integer whisper model'''
 if args.device == 'cuda' and torch.cuda.is_available():
-    model = whisper.load_int_model(args.model, args.device)
+    model = i_whisper.load_int_model(args.model, args.device)
     gpu_mem_log = gpu_tracker.track()
     for log_line in gpu_mem_log:
         logger.info(log_line)
 else:
     @profile(stream=profiler_stream)
     def load():
-        return whisper.load_int_model(args.model, args.device)
+        return i_whisper.load_int_model(args.model, args.device)
     model = load()
     model.pack_linear_weights()
 # Decoding options
-options = whisper.DecodingOptions(fp16=False, language="en")
+options = i_whisper.DecodingOptions(fp16=False, language="en")
 
 if args.test:
     '''Load audio dataset & ground truth'''
@@ -221,7 +221,7 @@ if args.test:
         audio = (np.float32(audio) * 2**15).astype(np.int16)  # to INT16 range
 
         audio_lengths.append(audio.shape[0]/16000)
-        audio = whisper.pad_or_trim(audio)
+        audio = i_whisper.pad_or_trim(audio)
         mel = PreProcessor.log_mel_spectrum(audio).to(model.device)
 
         # Reading Ground Truth
@@ -234,7 +234,7 @@ if args.test:
         GT_FILE.close()
 
         # quantized model transcription
-        result = whisper.decode(model, mel, options)
+        result = i_whisper.decode(model, mel, options)
         logger.info(f"transcribe result:    {result.text}")
         logger.info(f"ground truth(answer): {GT_READ}")
         
@@ -251,7 +251,7 @@ else:
     logger.info(f"Total number of Whisper {args.model} parameters: {total_params}")
 
     '''Load Audio & PreProcessing'''
-    audio = whisper.load_audio("vcsdl_dataset/tt.mp3", raw=True)
+    audio = i_whisper.load_audio("vcsdl_dataset/tt.mp3", raw=True)
     logger.info(f"Original audio length: {audio.shape[0]/16000:.2f} seconds")
     audio_list = []
     while audio.shape[0] > 30*16000:
@@ -259,14 +259,14 @@ else:
         audio_list.append( audio[:30*16000] )
         audio = audio[30*16000:]
     # the last clip (less than 30 seconds)
-    audio = whisper.pad_or_trim(audio)
+    audio = i_whisper.pad_or_trim(audio)
     audio_list.append(audio)
     del audio
     logger.info(f"Original Audio is cut into {len(audio_list)} 30-second clips")
     t1 = time.time()
     for idx, audio in enumerate(audio_list):
         mel = PreProcessor.log_mel_spectrum(audio).to(model.device)
-        result = whisper.decode(model, mel, options)
+        result = i_whisper.decode(model, mel, options)
         logger.info(f"clip {idx:>2d}: {result.text}")
     t2 = time.time()
     logger.info(f"Total inference time for {len(audio_list)} clips: {t2-t1:.2f} seconds")
