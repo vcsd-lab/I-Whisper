@@ -22,7 +22,7 @@ from .decoding import detect_language as detect_language_function
 from .transcribe import transcribe as transcribe_function
 from .kernels import w8a8
 from .modules.functional import Rshift, Fast_Inverse_Square_Root, Batch_Head_s8s8s32_GeMM, Batch_Head_u8s8s32_GeMM
-from .modules.linear import Linear8
+from .modules.linear import Linear8, Linear32
 
 import matplotlib.pyplot as plt
 import os
@@ -441,7 +441,8 @@ class LayerNorm_quantized(nn.LayerNorm):
                 #     assert x.dtype == torch.int16, "Input tensor must be int16 in integer inference mode!"
                 #     x_q = x
                 # except AssertionError:
-                x_q = x.mul(self.act_alpha).clamp(min=-self.act_range, max=self.act_range).round().to(torch.int32)
+                # x_q = x.mul(self.act_alpha).clamp(min=-self.act_range, max=self.act_range).round().to(torch.int32)
+                x_q = x.to(torch.int32)
             else:
                 x_t = x * self.act_alpha
                 x_c = x_t.clamp(min=-self.act_range, max=self.act_range)
@@ -464,7 +465,7 @@ class LayerNorm_quantized(nn.LayerNorm):
                 384: [False,True,True]    # 'b1.011,  d'1.375
             }
             def mul_by_shift_multiplier(x, multiplier):
-                out = x
+                out = x.clone()
                 if multiplier[0]:
                     out += (x >> 1) # += multiply by 0.5
                 if multiplier[1]:
@@ -525,7 +526,8 @@ class LayerNorm_quantized(nn.LayerNorm):
                 out = Rshift(out.long().mul(self.out_req_multiplier.long()), self.out_req_shiftmount.long())
                 out = out.clamp(min=-self.out_range, max=self.out_range).to(torch.int8)
 
-                return out, x_q.float().div(self.act_alpha)
+                # return out, x_q.float().div(self.act_alpha)
+                return out, x_q
             else:
                 return out.float() / self.ln_alpha / self.wgt_alpha, x_deq
         else:
@@ -646,7 +648,7 @@ class Linear_quantized(nn.Linear):
     
     
     @torch.no_grad()
-    def convert_to_int_mode(self, out_alpha:torch.Tensor, dequant:bool=False)->bool:
+    def convert_to_int_mode(self, out_alpha:torch.Tensor, dequant:bool=False, is_outlinear:bool=False)->bool:
         """Convert quantized layer to integer inference mode
         Args:
             out_alpha (torch.Tensor): output activation scale
@@ -658,8 +660,12 @@ class Linear_quantized(nn.Linear):
 
         req_alpha = out_alpha.double() / self.wgt_alpha.squeeze().double() / self.act_alpha.double()
         req_multiplier, req_shiftmount = torch.frexp(req_alpha)
-        self.req_multiplier.data = req_multiplier.mul(2**31).trunc().to(torch.uint32)
-        self.req_shiftmount.data = (-req_shiftmount - 1).clamp(0,32).to(torch.int8)
+        if is_outlinear:
+            self.req_multiplier.data = req_multiplier.mul(2**31).trunc().to(torch.uint32)
+            self.req_shiftmount.data = req_shiftmount.clamp(0,32).to(torch.int8)
+        else:
+            self.req_multiplier.data = req_multiplier.mul(2**31).trunc().to(torch.uint32)
+            self.req_shiftmount.data = (-req_shiftmount - 1).clamp(0,32).to(torch.int8)
         self.out_alpha = out_alpha
         self.dequant = dequant
 
@@ -1183,10 +1189,7 @@ class MultiHeadAttention_quantized(nn.Module):
         self.query.convert_to_int_mode(self.act_alpha_q)
         self.key.convert_to_int_mode(self.act_alpha_k)
         self.value.convert_to_int_mode(self.act_alpha_v)
-        self.out.convert_to_int_mode(out_alpha, dequant=True)  # output de-quant to float
-        self.query = Linear8.copy_param(self.query)
-        self.key = Linear8.copy_param(self.key)
-        self.value = Linear8.copy_param(self.value)
+        self.out.convert_to_int_mode(out_alpha, is_outlinear=True)  # output de-quant to float
 
         scale = (self.n_state // self.n_head) ** -0.5
         qk_req_alpha = torch.tensor([2.**self.qk_offset],dtype=torch.double,device=self.act_alpha_k.device) * torch.tensor([scale],dtype=torch.double,device=self.act_alpha_k.device) / self.act_alpha_q.double() / self.act_alpha_k.double()
@@ -1200,6 +1203,11 @@ class MultiHeadAttention_quantized(nn.Module):
         self.av_req_multiplier.data = av_req_multiplier.mul(2**7).trunc().to(torch.int8).view(self.av_req_multiplier.shape)
         self.av_req_shiftmount.data = (-av_req_shiftmount + 7).clamp(0,32).to(torch.int8).view(self.av_req_shiftmount.shape)
         self.av_req_alpha = av_req_alpha
+
+        self.query = Linear8.copy_param(self.query)
+        self.key = Linear8.copy_param(self.key)
+        self.value = Linear8.copy_param(self.value)
+        self.out = Linear32.copy_param(self.out)
 
         self.int_mode = True
         return self.int_mode
@@ -1497,42 +1505,43 @@ class ResidualAttentionBlock_quantized(nn.Module):
         '''Convert attention module'''
         self.attn_ln.convert_to_int_mode(self.attn.query.act_alpha)
         if self.cross_attn:
-            self.attn.convert_to_int_mode(self.cross_attn_ln.act_alpha*2.**15)
+            self.attn.convert_to_int_mode(self.cross_attn_ln.act_alpha*2.**16)
         else:
-            self.attn.convert_to_int_mode(self.mlp_ln.act_alpha*2.**15)
+            self.attn.convert_to_int_mode(self.mlp_ln.act_alpha*2.**16)
 
         '''Convert cross attention module (if exist)'''
         if self.cross_attn:
             self.cross_attn_ln.convert_to_int_mode(self.cross_attn.query.act_alpha)
-            self.cross_attn.convert_to_int_mode(self.mlp_ln.act_alpha*2.**15)
+            self.cross_attn.convert_to_int_mode(self.mlp_ln.act_alpha*2.**16)
 
         '''Convert MLP module'''
         self.mlp_ln.convert_to_int_mode(self.mlp[0].act_alpha)
         self.mlp[0].convert_to_int_mode(self.mlp[1].act_alpha)
         self.mlp[1].convert_to_int_mode(self.mlp[2].act_alpha)
-        self.mlp[2].convert_to_int_mode(out_alpha*2.**15, dequant=True)  # output de-quant to float
+        self.mlp[2].convert_to_int_mode(out_alpha*2.**16, is_outlinear=True)  # output de-quant to float
         self.mlp[0] = Linear8.copy_param(self.mlp[0])
+        self.mlp[2] = Linear32.copy_param(self.mlp[2])
         self.out_alpha = out_alpha
         gc.collect()
         torch.cuda.empty_cache()
 
 
-        # '''Calculate re-scale multiplier of residual path beside Attention module'''
-        # if self.cross_attn:
-        #     rescale_multiplier = self.cross_attn_ln.act_alpha*2.**15 / self.attn_ln.act_alpha
-        #     self.attn_res_req_multiplier.data = rescale_multiplier.round().clamp(*INT_MAX["U16"]).to(torch.uint16)
-        # else:
-        #     rescale_multiplier = self.mlp_ln.act_alpha*2.**15 / self.attn_ln.act_alpha
-        #     self.attn_res_req_multiplier.data = rescale_multiplier.round().clamp(*INT_MAX["U16"]).to(torch.uint16)
+        '''Calculate re-scale multiplier of residual path beside Attention module'''
+        if self.cross_attn:
+            rescale_multiplier = self.cross_attn_ln.act_alpha*2.**15 / self.attn_ln.act_alpha
+            self.attn_res_req_multiplier.data = rescale_multiplier.round().clamp(*INT_MAX["U16"]).to(torch.uint16)
+        else:
+            rescale_multiplier = self.mlp_ln.act_alpha*2.**15 / self.attn_ln.act_alpha
+            self.attn_res_req_multiplier.data = rescale_multiplier.round().clamp(*INT_MAX["U16"]).to(torch.uint16)
 
-        # '''Calculate re-scale multiplier of residual path beside Cross-Attention module (if exist)'''
-        # if self.cross_attn:
-        #     cross_attn_rescale_multiplier = self.mlp_ln.act_alpha*2.**15 / self.cross_attn_ln.act_alpha
-        #     self.cross_attn_res_req_multiplier.data = cross_attn_rescale_multiplier.round().clamp(*INT_MAX["U16"]).to(torch.uint16)
+        '''Calculate re-scale multiplier of residual path beside Cross-Attention module (if exist)'''
+        if self.cross_attn:
+            cross_attn_rescale_multiplier = self.mlp_ln.act_alpha*2.**15 / self.cross_attn_ln.act_alpha
+            self.cross_attn_res_req_multiplier.data = cross_attn_rescale_multiplier.round().clamp(*INT_MAX["U16"]).to(torch.uint16)
 
-        # '''Calculate re-scale multiplier of residual path beside MLP module'''
-        # mlp_rescale_multiplier = out_alpha*2.**15 / self.mlp_ln.act_alpha
-        # self.mlp_res_req_multiplier.data = mlp_rescale_multiplier.round().clamp(*INT_MAX["U16"]).to(torch.uint16)
+        '''Calculate re-scale multiplier of residual path beside MLP module'''
+        mlp_rescale_multiplier = out_alpha*2.**15 / self.mlp_ln.act_alpha
+        self.mlp_res_req_multiplier.data = mlp_rescale_multiplier.round().clamp(*INT_MAX["U16"]).to(torch.uint16)
 
         self.int_mode = True
         return self.int_mode
@@ -1577,15 +1586,15 @@ class ResidualAttentionBlock_quantized(nn.Module):
 
         '''Residual connection with/without quantization'''
         if self.quantize:
-            # if self.int_mode:
-            #     x = x.int().mul(self.attn_res_req_multiplier.int())
-            #     x = Rshift(attn_t + x, 15)
-            #     x = x.clamp(-self.act_attn_range, self.act_attn_range).to(torch.int16)
-            # else:
-            #     attn_t = attn_t.mul(self.act_attn_alpha).round().div(self.act_attn_alpha)
-            #     x = x + attn_t
-            attn_t = attn_t.mul(self.act_attn_alpha).round().div(self.act_attn_alpha)
-            x = x + attn_t
+            if self.int_mode:
+                x = x.int().mul(self.attn_res_req_multiplier.int())
+                x = Rshift(attn_t + x, 15)
+                x = x.clamp(-self.act_attn_range, self.act_attn_range).to(torch.int16)
+            else:
+                attn_t = attn_t.mul(self.act_attn_alpha).round().div(self.act_attn_alpha)
+                x = x + attn_t
+            # attn_t = attn_t.mul(self.act_attn_alpha).round().div(self.act_attn_alpha)
+            # x = x + attn_t
         else:
             x = x + attn_t
 
@@ -1610,15 +1619,15 @@ class ResidualAttentionBlock_quantized(nn.Module):
 
             '''Residual connection with/without quantization'''
             if self.quantize:
-                # if self.int_mode:
-                #     x = x.int().mul(self.cross_attn_res_req_multiplier.int())
-                #     x = Rshift(cross_attn_t + x, 15)
-                #     x = x.clamp(-self.act_cross_attn_range, self.act_cross_attn_range).to(torch.int16)
-                # else:
-                #     cross_attn_t = cross_attn_t.mul(self.act_cross_attn_alpha).round().div(self.act_cross_attn_alpha)
-                #     x = x + cross_attn_t
-                cross_attn_t = cross_attn_t.mul(self.act_cross_attn_alpha).round().div(self.act_cross_attn_alpha)
-                x = x + cross_attn_t
+                if self.int_mode:
+                    x = x.int().mul(self.cross_attn_res_req_multiplier.int())
+                    x = Rshift(cross_attn_t + x, 15)
+                    x = x.clamp(-self.act_cross_attn_range, self.act_cross_attn_range).to(torch.int16)
+                else:
+                    cross_attn_t = cross_attn_t.mul(self.act_cross_attn_alpha).round().div(self.act_cross_attn_alpha)
+                    x = x + cross_attn_t
+                # cross_attn_t = cross_attn_t.mul(self.act_cross_attn_alpha).round().div(self.act_cross_attn_alpha)
+                # x = x + cross_attn_t
             else:
                 x = x + cross_attn_t
 
@@ -1641,16 +1650,16 @@ class ResidualAttentionBlock_quantized(nn.Module):
 
         '''Residual connection with/without quantization'''
         if self.quantize:
-            # if self.int_mode:
-            #     x = x.int().mul(self.mlp_res_req_multiplier.int())
-            #     x = Rshift(mlp_out + x, 15)
-            #     x = x.clamp(-self.act_mlp_range, self.act_mlp_range).to(torch.int16)
-            #     x = x + mlp_out
-            # else:
-            #     mlp_out = mlp_out.mul(self.act_alpha_mlp).round().div(self.act_alpha_mlp)
-            #     x = x + mlp_out
-            mlp_out = mlp_out.mul(self.act_alpha_mlp).round().div(self.act_alpha_mlp)
-            x = x + mlp_out
+            if self.int_mode:
+                x = x.int().mul(self.mlp_res_req_multiplier.int())
+                x = Rshift(mlp_out + x, 15)
+                x = x.clamp(-self.act_mlp_range, self.act_mlp_range).to(torch.int16)
+                # x = x + mlp_out
+            else:
+                mlp_out = mlp_out.mul(self.act_alpha_mlp).round().div(self.act_alpha_mlp)
+                x = x + mlp_out
+            # mlp_out = mlp_out.mul(self.act_alpha_mlp).round().div(self.act_alpha_mlp)
+            # x = x + mlp_out
         else:
             x = x + mlp_out
 
@@ -1853,7 +1862,7 @@ class AudioEncoder_quantized(nn.Module):
                 x = (x.int() + self.positional_embedding)
                 x = Rshift(x.mul(self.req_multiplier.int()), self.req_shiftmount.int())
                 x = x.clamp(min=-self.blocks[0].attn_ln.act_range, max=self.blocks[0].attn_ln.act_range).to(torch.int16)
-                x = x.float().div(self.blocks[0].attn_ln.act_alpha)
+                # x = x.float().div(self.blocks[0].attn_ln.act_alpha)
             else:
                 # quant
                 x = x.mul(self.act_alpha).clamp(min=-self.act_pe_range, max=self.act_pe_range) # [B,T,C]
@@ -2074,14 +2083,14 @@ class TextDecoder_quantized(nn.Module):
         if self.quantize:
             x = ( self.token_embedding(x).to(torch.int32) + self.positional_embedding[offset : offset + x.shape[-1]] )
             x = Rshift(x.mul(self.req_multiplier.int()), self.req_shiftmount.int())
-            x = x.clamp(min=-self.blocks[0].attn_ln.act_range, max=self.blocks[0].attn_ln.act_range).float().div(self.blocks[0].attn_ln.act_alpha)
-            # if self.int_mode:
-            #     # re-quant
-            #     # x = x.clamp(min=-self.blocks[0].attn_ln.act_range, max=self.blocks[0].attn_ln.act_range).to(torch.int16)
-            #     x = x.clamp(min=-self.blocks[0].attn_ln.act_range, max=self.blocks[0].attn_ln.act_range).float().div(self.blocks[0].attn_ln.act_alpha)
-            # else:
-            #     # de-quant
-            #     x = x.clamp(min=-self.blocks[0].attn_ln.act_range, max=self.blocks[0].attn_ln.act_range).float().div(self.blocks[0].attn_ln.act_alpha)
+                
+            if self.int_mode:
+                # re-quant
+                x = x.clamp(min=-self.blocks[0].attn_ln.act_range, max=self.blocks[0].attn_ln.act_range).to(torch.int16)
+                # x = x.clamp(min=-self.blocks[0].attn_ln.act_range, max=self.blocks[0].attn_ln.act_range).float().div(self.blocks[0].attn_ln.act_alpha)
+            else:
+                # de-quant
+                x = x.clamp(min=-self.blocks[0].attn_ln.act_range, max=self.blocks[0].attn_ln.act_range).float().div(self.blocks[0].attn_ln.act_alpha)
         else:
             x = ( self.token_embedding(x) + self.positional_embedding[offset : offset + x.shape[-1]] ).to(xa.dtype)
 
