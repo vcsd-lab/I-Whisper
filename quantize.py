@@ -19,6 +19,160 @@ import jiwer
 from i_whisper.model_quant import ResidualAttentionBlock_quantized, LayerNorm_quantized, Linear_quantized, GELU_quantized
 from i_whisper.model_int import Build_from_Quant
 
+
+import traceback
+from torch.utils._python_dispatch import TorchDispatchMode
+from torch.utils._pytree import tree_flatten
+
+
+
+# class IntegerOnlyAudit(TorchDispatchMode):
+#     def __init__(self):
+#         super().__init__()
+#         self.ops = []
+
+#     @staticmethod
+#     def _get_user_stack():
+#         stack = traceback.extract_stack()
+
+#         useful = []
+
+#         for frame in stack:
+#             filename = frame.filename
+
+#             # Filter out PyTorch / audit internals
+#             if (
+#                 "site-packages/torch/" in filename
+#                 or "_python_dispatch.py" in filename
+#             ):
+#                 continue
+
+#             useful.append(frame)
+
+#         return "".join(traceback.format_list(useful[-10:]))
+
+#     def _check_tree(self, obj, where):
+#         flat, _ = tree_flatten(obj)
+
+#         for x in flat:
+#             if isinstance(x, torch.Tensor):
+#                 if x.is_floating_point() or x.is_complex():
+
+#                     stack = self._get_user_stack()
+
+#                     raise RuntimeError(
+#                         "\n"
+#                         "==================================================\n"
+#                         "[FLOAT DETECTED]\n"
+#                         f"Location : {where}\n"
+#                         f"dtype    : {x.dtype}\n"
+#                         f"shape    : {tuple(x.shape)}\n"
+#                         "\n"
+#                         "Python call stack:\n"
+#                         f"{stack}"
+#                         "=================================================="
+#                     )
+
+#     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+#         kwargs = kwargs or {}
+
+#         self._check_tree(
+#             (args, kwargs),
+#             f"{func} input"
+#         )
+
+#         flat, _ = tree_flatten((args, kwargs))
+
+#         for x in flat:
+#             if isinstance(x, float):
+#                 stack = self._get_user_stack()
+
+#                 raise RuntimeError(
+#                     f"\n[PYTHON FLOAT DETECTED]\n"
+#                     f"Operator: {func}\n"
+#                     f"Value: {x}\n"
+#                     f"{stack}"
+#                 )
+
+#         self.ops.append(str(func))
+
+#         out = func(*args, **kwargs)
+
+#         self._check_tree(
+#             out,
+#             f"{func} output"
+#         )
+
+#         return out
+
+class IntegerOnlyAudit(TorchDispatchMode):
+    def __init__(self):
+        super().__init__()
+        self.ops = []
+
+    @staticmethod
+    def _has_float_tensor(obj):
+        flat, _ = tree_flatten(obj)
+
+        return any(
+            isinstance(x, torch.Tensor)
+            and (x.is_floating_point() or x.is_complex())
+            for x in flat
+        )
+
+    @staticmethod
+    def _describe_tensors(obj):
+        flat, _ = tree_flatten(obj)
+
+        ret = []
+
+        for x in flat:
+            if isinstance(x, torch.Tensor):
+                ret.append(
+                    f"shape={tuple(x.shape)}, dtype={x.dtype}"
+                )
+
+        return ret
+
+    def __torch_dispatch__(
+        self,
+        func,
+        types,
+        args=(),
+        kwargs=None,
+    ):
+        kwargs = kwargs or {}
+
+        input_has_float = self._has_float_tensor(
+            (args, kwargs)
+        )
+
+        out = func(*args, **kwargs)
+
+        output_has_float = self._has_float_tensor(out)
+
+        self.ops.append(str(func))
+
+        if input_has_float or output_has_float:
+            stack = "".join(
+                traceback.format_stack(limit=15)
+            )
+
+            raise RuntimeError(
+                "\n"
+                "========================================\n"
+                "[FLOAT TENSOR DETECTED]\n"
+                f"Operator : {func}\n"
+                f"Inputs   : {self._describe_tensors((args, kwargs))}\n"
+                f"Outputs  : {self._describe_tensors(out)}\n"
+                f"{stack}"
+                "========================================"
+            )
+
+        return out
+
+
+
 import re
 class Expand(jiwer.AbstractTransform):
     def process_string(self, s: str):
@@ -478,6 +632,7 @@ if args.test:
     #     torch.save(checkpoint, PATH)
     # model = model_i
     model.convert_to_int_mode()
+    audit = IntegerOnlyAudit()
 
     
     TEXT_GT = []
@@ -521,10 +676,21 @@ if args.test:
         GT_FILE.close()
         test_loop.set_description_str(f"Test Sample {i}:{GT_PATH}")
 
+        # compile checker: check if integer-only inference compile success
+        # if i == 0:
+        #     mel = mel.mul(model.encoder.input_alpha).round().clamp(-127, 127).to(torch.int8).unsqueeze(0)
+        #     with audit:
+        #         feature = model.encoder(mel)
+        
+
         # quantized model transcription
         result = i_whisper.decode(model, mel, options)
         # add result to TEXT list
         TEXT.append(result.text)
+        
+        
+        
+        
 
 
     Align_and_Report(TEXT_GT, TEXT, audio_lengths, f)

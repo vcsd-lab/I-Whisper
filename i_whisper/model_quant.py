@@ -21,7 +21,15 @@ from .decoding import decode as decode_function
 from .decoding import detect_language as detect_language_function
 from .transcribe import transcribe as transcribe_function
 from .kernels import w8a8
-from .modules.functional import Rshift, Fast_Inverse_Square_Root, Batch_Head_s8s8s32_GeMM, Batch_Head_u8s8s32_GeMM
+from .modules.functional import (
+    Rshift,
+    Fast_Inverse_Square_Root,
+    Batch_Head_s8s8s32_GeMM,
+    Batch_Head_u8s8s32_GeMM,
+    int_bit_length,
+    build_rsqrt_lut,
+    LUT_Based_Inverse_Square_Root
+)
 from .modules.linear import Linear8, Linear32
 
 import matplotlib.pyplot as plt
@@ -326,6 +334,7 @@ class LayerNorm_quantized(nn.LayerNorm):
         self.norm_bit = 15
         self.out_bit = 8
         self.offset = 12
+        self.lut_bits = 6
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_range = 2**(self.act_bit-1)-1              # Signed
@@ -403,6 +412,16 @@ class LayerNorm_quantized(nn.LayerNorm):
         self.wgt_alpha.data = self.wgt_range/self.weight.data.abs().max()
         weight_q = self.weight.mul(self.wgt_alpha).clamp(min=-self.wgt_range, max=self.wgt_range).round().to(torch.int8)
         self.weight = nn.Parameter(weight_q, requires_grad=False)
+
+        self.register_buffer(
+            "rsqrt_lut",
+            build_rsqrt_lut(
+                lut_bits=self.lut_bits,
+                frac_bits=self.offset,
+            ).to(self.weight.device)
+        )
+        
+        
 
         if self.bias is not None:
             bias_q = self.bias.mul(self.ln_alpha).mul(self.wgt_alpha).clamp(min=-self.bias_range, max=self.bias_range).round().to(torch.int32)
@@ -494,16 +513,18 @@ class LayerNorm_quantized(nn.LayerNorm):
             mean_q = mul_by_shift_multiplier(mean_q, norm_mul) >> norm_shmnt # reduce by mul & rshift, avoid division
             dev_square_q = (x_q - mean_q).abs()**2
 
-            max_bit_length = dev_square_q.abs().max(dim=-1, keepdim=True).values.log2().ceil().int() # max bit usage in dev_square_q's last dim (hidden dim)
+            max_bit_length = int_bit_length(dev_square_q.max(dim=-1, keepdim=True).values) # max bit usage in dev_square_q's last dim (hidden dim)
             # OR you can say max clz(count leading zero) in dev_square_q's last dim
             renorm_shmnt = (max_bit_length - 16).clamp(min=0) # assume 23 bits of every number in dev_square_q's last dim is enough (fp32 has 23 bits mantissa)
             # this means, we find if anyone is more than 16 bits
             # if true, every number in the group Rshift by the same amount to prevent overflow in the following summation
-            renorm_shmnt = renorm_shmnt & 0xFFFFFFFE # make it even number
+            # renorm_shmnt = renorm_shmnt & 0xFFFFFFFE # make it even number
+            renorm_shmnt = (renorm_shmnt + 1) & ~1
 
-            var_q = torch.sum((Rshift(dev_square_q, renorm_shmnt)), dim=-1, keepdim=True)
-            var_q = mul_by_shift_multiplier(var_q, norm_mul) >> norm_shmnt # reduce by mul & rshift, avoid division
+            var_q = torch.sum((Rshift(dev_square_q, renorm_shmnt)), dim=-1, keepdim=True).int()
+            var_q = (mul_by_shift_multiplier(var_q, norm_mul) >> norm_shmnt).int() # reduce by mul & rshift, avoid division
             invstd_q = Fast_Inverse_Square_Root(var_q, self.offset, 2) # this is in fixed point q12.20 format
+            # invstd_q = LUT_Based_Inverse_Square_Root(var_q, self.rsqrt_lut, self.offset, self.lut_bits, Newton_iter=2) # this is in fixed point q12.20 format
             x_norm = ((x_q - mean_q) * invstd_q)
 
             # x_norm_save = x_norm.to('cpu').numpy()
@@ -938,7 +959,7 @@ class Conv1d_quantized(nn.Conv1d):
         out_req_alpha = out_alpha / self.wgt_alpha / self.act_alpha
         out_req_multipler, out_req_shiftmount = torch.frexp(out_req_alpha)
         self.req_multiplier.data = out_req_multipler.mul(2**31).trunc().to(torch.uint32)
-        self.req_shiftmount.data = (-out_req_shiftmount + 31).clamp(0,64).to(torch.int8)
+        self.req_shiftmount.data = (-out_req_shiftmount - 1).clamp(0,32).to(torch.int8)
         self.out_alpha = out_alpha
         self.int_mode = True
         return self.int_mode
@@ -1023,23 +1044,43 @@ class Conv1d_quantized(nn.Conv1d):
         if self.quantize:
             if self.int_mode:
                 assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
-                out = torch.nn.functional.unfold(x.unsqueeze(-1).float(), kernel_size=(self.kernel_size[0],1),
-                    dilation=(self.dilation[0],1), padding=(self.padding[0],0), stride=(self.stride[0],1)).permute(0,2,1).to(torch.int8)
+                # out = torch.nn.functional.unfold(x.unsqueeze(-1).float(), kernel_size=(self.kernel_size[0],1),
+                #     dilation=(self.dilation[0],1), padding=(self.padding[0],0), stride=(self.stride[0],1)).permute(0,2,1).to(torch.int8)
+                
+                x = torch.nn.functional.pad(
+                    x,
+                    (self.padding[0], self.padding[0])
+                )
+
+                out = x.unfold(
+                    dimension=2,
+                    size=self.kernel_size[0],
+                    step=self.stride[0]
+                )
+
+                out = (
+                    out
+                    .permute(0, 2, 1, 3)
+                    .contiguous()
+                    .view(
+                        x.shape[0],
+                        -1,
+                        self.in_channels * self.kernel_size[0]
+                    )
+                )
 
                 if x.device.type == 'cuda':
                     out = int8_linear_matmul(out.contiguous(), self.weight)
                 else: # using cpu
-                    if _IS_ARM:
-                        out = w8a8.s8s8s32_gemm(out.contiguous(), self.weight)
-                    else:
-                        out = torch.matmul(out.int(), self.weight.int().t())
+                    out = torch.matmul(out.int(), self.weight.int().t())
                 
                 if self.bias is not None:
                     out += self.bias
                 out = out.permute(0,2,1)
                 '''Re-Quantization'''
-                # out = Rshift(out.long().mul(self.req_multiplier.long()), self.req_shiftmount.long())
-                out = out.float().div(self.wgt_alpha).div(self.act_alpha).mul(self.out_alpha)
+                out = (out.long().mul(self.req_multiplier.long()) >> 32).int()
+                out = Rshift(out, self.req_shiftmount)
+                # out = out.float().div(self.wgt_alpha).div(self.act_alpha).mul(self.out_alpha)
                 out = out.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
                 return out
             else:
@@ -1119,8 +1160,13 @@ class MultiHeadAttention_quantized(nn.Module):
         self.qk_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
         self.av_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.int32), requires_grad=False)
         self.av_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
-        self.qk_offset = 7.
+        # self.qk_offset = 7
+        self.register_buffer(
+            "qk_frac_bits",
+            torch.tensor(7, dtype=torch.int32)
+        )
         self.rsqrt_offset = 16
+        self.lut_bits = 6
 
         '''sub-modules initialization'''
         self.query = Linear_quantized(
@@ -1175,6 +1221,14 @@ class MultiHeadAttention_quantized(nn.Module):
         # CHECK: self.running_num > 0
         assert self.running_num > 0, "Please calibrate quantization parameters before quantizing!"
 
+        self.register_buffer(
+            "rsqrt_lut",
+            build_rsqrt_lut(
+                lut_bits=self.lut_bits,
+                frac_bits=self.rsqrt_offset,
+            ).to(self.query.weight.device)
+        )
+
         self.quantize = True
         return self.quantize
     
@@ -1192,16 +1246,20 @@ class MultiHeadAttention_quantized(nn.Module):
         self.out.convert_to_int_mode(out_alpha, is_outlinear=True)  # output de-quant to float
 
         scale = (self.n_state // self.n_head) ** -0.5
-        qk_req_alpha = torch.tensor([2.**self.qk_offset],dtype=torch.double,device=self.act_alpha_k.device) * torch.tensor([scale],dtype=torch.double,device=self.act_alpha_k.device) / self.act_alpha_q.double() / self.act_alpha_k.double()
+        qk_req_alpha = torch.tensor([2.**self.qk_frac_bits],dtype=torch.double,device=self.act_alpha_k.device) * torch.tensor([scale],dtype=torch.double,device=self.act_alpha_k.device) / self.act_alpha_q.double() / self.act_alpha_k.double()
         qk_req_multiplier, qk_req_shiftmount = torch.frexp(qk_req_alpha)
-        self.qk_req_multiplier.data = qk_req_multiplier.mul(2**31).trunc().to(torch.int32).view(self.qk_req_multiplier.shape)
-        self.qk_req_shiftmount.data = (-qk_req_shiftmount + 31).clamp(0,64).to(torch.int8).view(self.qk_req_shiftmount.shape)
+        self.qk_req_multiplier.data = qk_req_multiplier.mul(2**7).trunc().to(torch.int32).view(self.qk_req_multiplier.shape)
+        self.qk_req_shiftmount.data = (-qk_req_shiftmount + 7).clamp(0,32).to(torch.int8).view(self.qk_req_shiftmount.shape)
+        test_array = (-qk_req_shiftmount + 7)
+        assert torch.all(test_array >= 0), "qk_req_multiplier must be positive!"
         
         
         av_req_alpha =  self.out.act_alpha / self.act_alpha_v
         av_req_multiplier, av_req_shiftmount = torch.frexp(av_req_alpha)
         self.av_req_multiplier.data = av_req_multiplier.mul(2**7).trunc().to(torch.int8).view(self.av_req_multiplier.shape)
         self.av_req_shiftmount.data = (-av_req_shiftmount + 7).clamp(0,32).to(torch.int8).view(self.av_req_shiftmount.shape)
+        test_array = (-av_req_shiftmount + 7)
+        assert torch.all(test_array >= 0), "av_req_multiplier must be positive!"
         self.av_req_alpha = av_req_alpha
 
         self.query = Linear8.copy_param(self.query)
@@ -1247,7 +1305,7 @@ class MultiHeadAttention_quantized(nn.Module):
                 x.shape[2]//mask.shape[2],
                 x.shape[3]//mask.shape[3])
 
-        offset = int(self.qk_offset)
+        offset = self.qk_frac_bits
         if x.dtype == torch.int16:
             x[mask] = torch.iinfo(torch.int16).min
         elif x.dtype == torch.int32:
@@ -1260,8 +1318,8 @@ class MultiHeadAttention_quantized(nn.Module):
         x_exp = ((1 << offset) + (x_mul_frac >> 1)) >> (-x_mul_int)
         x_exp[mask] = 0
         x_exp[x_sub>0] = 0
-        if self.qk_offset > 7:
-            x_exp = x_exp.int() >> int(self.qk_offset - 7)
+        if self.qk_frac_bits > 7:
+            x_exp = x_exp.int() >> (self.qk_frac_bits - 7)
         return x_exp.to(torch.uint8)
 
 
@@ -1276,22 +1334,17 @@ class MultiHeadAttention_quantized(nn.Module):
         '''Calculate QK^T'''
         if self.quantize:
             scale = (n_state // self.n_head) ** -0.5
-            rescale_factor = scale / self.act_alpha_q / self.act_alpha_k * 2.**self.qk_offset
             q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
             k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
             v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 3, 1)
             
             if self.int_mode:
                 qk = Batch_Head_s8s8s32_GeMM(q, k)  # int32 tensor
-                # qk_r = Rshift(qk.long().mul(self.qk_req_multiplier.long()), self.qk_req_shiftmount.long()).int()
-                # qk = Tshift(qk.long().mul(self.qk_req_multiplier.long()), self.qk_req_shiftmount.long()).clamp(*INT_MAX["S16"]).to(torch.int16)
-                # qk = (qk.long().mul(self.qk_req_multiplier.long())>> self.qk_req_shiftmount.long()).clamp(*INT_MAX["S16"]).to(torch.int16)
-                # qk_ft = qk.float().mul(rescale_factor).trunc().int()
-                # qk_fr = qk.float().mul(rescale_factor).round().int()
-                # qk = qk.float().mul(rescale_factor).clamp(*INT_MAX["S32"]).to(torch.int32)
-                qk = qk.float().mul(rescale_factor).trunc().clamp(*INT_MAX["S16"]).to(torch.int16)
+                qk = Rshift(qk.mul(self.qk_req_multiplier), self.qk_req_shiftmount)
+                qk = qk.clamp(*INT_MAX["S16"]).to(torch.int16)
 
             else:
+                rescale_factor = scale / self.act_alpha_q / self.act_alpha_k * 2.**self.qk_frac_bits
                 q_t = q * self.act_alpha_q
                 q_c = q_t.clamp(min=-self.act_range, max=self.act_range)
                 q_q = torch.round(q_c).to(torch.int8)
@@ -1334,15 +1387,27 @@ class MultiHeadAttention_quantized(nn.Module):
                 self.act_alpha_q.data = self.act_range/self.running_max_q.data
                 self.act_alpha_k.data = self.act_range/self.running_max_k.data
                 self.act_alpha_v.data = self.act_range/self.running_max_v.data
-                self.qk_offset = 15-self.running_max_qk
+
+                
+                # Number of fractional bits used for the INT16 QK-score representation.
+                # For each layer, calibration estimates the number of integer magnitude
+                # bits required by the maximum QK score. Since signed INT16 provides
+                # 15 magnitude/fraction bits excluding the sign bit, all remaining bits
+                # are allocated to the fractional part to maximize the precision of the
+                # subsequent integer exponential approximation without overflowing INT16.
+                # 2026.09.07 chen96013(Jun-An Chen, chen96013@gmail.com)
+                # self.qk_frac_bits = int(15-self.running_max_qk) # WHY???
+                self.qk_frac_bits.fill_(
+                    int(15 - self.running_max_qk.item())
+                )
 
         '''Calculate softmax(QK^T) * V'''
         if self.quantize:
             # Naive
             # if mask is not None:
-            #     qk_softmax = F.softmax(qk.float().div(2.**self.qk_offset)+mask[:n_ctx, :n_ctx], dim=-1)
+            #     qk_softmax = F.softmax(qk.float().div(2.**self.qk_frac_bits)+mask[:n_ctx, :n_ctx], dim=-1)
             # else:
-            #     qk_softmax = F.softmax(qk.float().div(2.**self.qk_offset), dim=-1)
+            #     qk_softmax = F.softmax(qk.float().div(2.**self.qk_frac_bits), dim=-1)
             
             # qk_softmax_q = qk_softmax.mul(2.**7).round().clamp(min=0, max=255).to(torch.uint8)
             # out = Batch_Head_u8s8s32_GeMM(qk_softmax_q, v)  # int32 tensor
@@ -1363,13 +1428,13 @@ class MultiHeadAttention_quantized(nn.Module):
                 qk_exp = self.shift_exp(qk, mask)
 
             out = Batch_Head_u8s8s32_GeMM(qk_exp, v)  # int32 tensor
-            sum_inv_mul = Fast_Inverse_Square_Root(qk_exp.sum(dim=-1, keepdim=True), self.rsqrt_offset, Newton_iter=2)
+            sum_inv_mul = Fast_Inverse_Square_Root(qk_exp.sum(dim=-1, keepdim=True).int(), self.rsqrt_offset, Newton_iter=2)
 
-            out = Rshift(out.long() * sum_inv_mul.long(), self.rsqrt_offset)
-            out = Rshift(out.long() * sum_inv_mul.long(), self.rsqrt_offset)
+            out = Rshift(out.mul(sum_inv_mul).int(), self.rsqrt_offset)
+            out = Rshift(out.mul(sum_inv_mul).int(), self.rsqrt_offset)
 
             if self.int_mode:
-                out = out.mul(self.av_req_alpha).round()
+                out = Rshift(out.mul(self.av_req_multiplier).int(), self.av_req_shiftmount)
                 out = out.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
             else:
                 '''dequantize'''
