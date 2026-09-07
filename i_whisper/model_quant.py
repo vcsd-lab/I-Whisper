@@ -1297,8 +1297,11 @@ class MultiHeadAttention_quantized(nn.Module):
     def shift_exp(self,x,mask):
         if mask is None:
             mask = torch.zeros_like(x, dtype=torch.bool)
-        if mask.dtype != torch.bool:
-            mask = (mask==float('-inf')).unsqueeze(0).unsqueeze(0)
+        else:
+            if mask.dtype != torch.bool:
+                mask = (mask==float('-inf'))
+            
+            mask = mask.unsqueeze(0).unsqueeze(0)
             mask = mask.repeat(
                 x.shape[0]//mask.shape[0],
                 x.shape[1]//mask.shape[1],
@@ -1980,6 +1983,7 @@ class TextDecoder_quantized(nn.Module):
         self.quantize = quantize
         self.int_mode = int_mode
         self.debug = debug
+        self.dequant_need = True
 
         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
         self.wgt_bit = 8        # embedding
@@ -2068,9 +2072,11 @@ class TextDecoder_quantized(nn.Module):
         clf_req_alpha = self.act_logits_alpha / self.wgt_alpha / self.act_cf_alpha
         clf_req_alpha, clf_req_shmnt = torch.frexp(clf_req_alpha)
         clf_req_alpha = torch.round(clf_req_alpha * 2. ** 31).clamp(0,torch.iinfo(torch.uint32).max).to(torch.uint32)
-        clf_req_shmnt = (-clf_req_shmnt + 31).clamp(0,31).to(torch.int8)
+        clf_req_shmnt = (-clf_req_shmnt - 1).clamp(0,31).to(torch.int8)
         self.clf_req_multiplier.data = clf_req_alpha.view(self.clf_req_multiplier.shape)
         self.clf_req_shiftmount.data = clf_req_shmnt.view(self.clf_req_shiftmount.shape)
+        
+        self.mask = (self.mask==float('-inf'))
 
         self.int_mode = True
         return self.int_mode
@@ -2191,8 +2197,12 @@ class TextDecoder_quantized(nn.Module):
                         logits = torch.matmul(x.int(), self.token_embedding.weight.int().t())
 
                 # requant logits
-                logits = Rshift(logits.long().mul(self.clf_req_multiplier.long()), self.clf_req_shiftmount.long())
-                logits = logits.float().div(self.act_logits_alpha)
+                logits = (logits.long().mul(self.clf_req_multiplier.long()) >> 32).int()
+                logits = Rshift(logits, self.clf_req_shiftmount)
+                if self.dequant_need:
+                    logits = logits.float().div(self.act_logits_alpha)
+                else:
+                    logits = logits.clamp(min=-self.act_logits_range, max=self.act_logits_range).to(torch.int8)
             else:
                 # quant
                 act_cf_t = x * self.act_cf_alpha

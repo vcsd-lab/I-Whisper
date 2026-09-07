@@ -155,7 +155,8 @@ class IntegerOnlyAudit(TorchDispatchMode):
 
         if input_has_float or output_has_float:
             stack = "".join(
-                traceback.format_stack(limit=15)
+                # traceback.format_stack(limit=15)
+                traceback.format_stack()
             )
 
             raise RuntimeError(
@@ -677,17 +678,23 @@ if args.test:
         test_loop.set_description_str(f"Test Sample {i}:{GT_PATH}")
 
         # compile checker: check if integer-only inference compile success
-        # if i == 0:
-        #     mel = mel.mul(model.encoder.input_alpha).round().clamp(-127, 127).to(torch.int8).unsqueeze(0)
-        #     with audit:
-        #         feature = model.encoder(mel)
+        if i == 0:
+            mel_test = mel.mul(model.encoder.input_alpha).round().clamp(-127, 127).to(torch.int8).unsqueeze(0)
+            tokens: Tensor = torch.tensor([50258, 50259, 50359]).repeat(1, 1)
+            with audit:
+                feature = model.encoder(mel_test)
+                # set decoder to no dequantize mode
+                model.decoder.dequant_need = False
+                logits = model.decoder(tokens.to(feature.device), feature)
+                model.decoder.dequant_need = True
+                logger.info(f"MODEL INT INFERENCE CHECK: PASS")
+                
         
 
         # quantized model transcription
         result = i_whisper.decode(model, mel, options)
         # add result to TEXT list
         TEXT.append(result.text)
-        
         
         
         
