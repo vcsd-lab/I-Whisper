@@ -31,6 +31,7 @@ from .modules.functional import (
     LUT_Based_Inverse_Square_Root
 )
 from .modules.linear import Linear8, Linear32
+from .model_int import LayerNorm_int
 
 import matplotlib.pyplot as plt
 import os
@@ -118,9 +119,7 @@ class GELU_quantized(nn.Module):
         self.lut[-1] = 2**self.lut_data_bit -1
         self.luti_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint32), requires_grad=False)
         self.luti_req_shiftmount = nn.Parameter(torch.zeros(channel_num, dtype=torch.int8), requires_grad=False)
-        # self.rescale_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint32), requires_grad=False)
-        # self.rescale_shiftmount = nn.Parameter(torch.zeros(channel_num, dtype=torch.int8), requires_grad=False)
-        self.luto_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint32), requires_grad=False)
+        self.luto_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint8), requires_grad=False)
         self.luto_req_shiftmount = nn.Parameter(torch.zeros(channel_num, dtype=torch.int8), requires_grad=False)
         if self.quantize and self.int_mode:
             self.de_smooth_vec = nn.Parameter(torch.ones(self.channel_num, dtype=torch.uint8), requires_grad=False)
@@ -168,32 +167,17 @@ class GELU_quantized(nn.Module):
     def convert_to_int_mode(self, out_alpha)->bool:
         assert self.quantize, "Only support convert to int mode after quantization!"
         
-        if self.de_smooth_vec.shape == torch.Size([1]):
-            sv_quant, wgt_scale_sv = self.de_smooth_vec.frexp()
-            wgt_scale_sv = 2.0 ** (wgt_scale_sv-7)
-            sv_quant = (sv_quant * 2.**7).round().clamp(0,255).to(torch.uint8)
-        else:
-            wgt_scale_sv = self.de_smooth_vec.max() / 255.0
-            sv_quant = (self.de_smooth_vec / wgt_scale_sv).round().clamp(0,255).to(torch.uint8)
-        
-        self.de_smooth_vec = nn.Parameter(sv_quant, requires_grad=False)
-
-        # sv = self.de_smooth_vec / self.act_alpha / self.lut_delta
-        # rescale_multiplier, rescale_shiftmount = torch.frexp(sv)
-        # self.rescale_multiplier.data = (rescale_multiplier * 2.**7).round().to(torch.uint8)
-        # self.rescale_shiftmount.data = (-rescale_shiftmount + 7).clamp(0,32).to(torch.int8)
-        
         # caluclate requantization parameters
-        luti_req_alpha = wgt_scale_sv / self.act_alpha / self.lut_delta
+        luti_req_alpha = self.de_smooth_vec / self.act_alpha / self.lut_delta
         luti_req_multiplier, luti_req_shiftmount = torch.frexp(luti_req_alpha)
         self.luti_req_multiplier.data = (luti_req_multiplier * 2.**31).round().to(torch.uint32)
-        self.luti_req_shiftmount.data = (-luti_req_shiftmount + 31).round().clamp(0,64).to(torch.int8)
+        self.luti_req_shiftmount.data = (-luti_req_shiftmount - 1).round().clamp(0,32).to(torch.int8)
 
         luto_req_alpha = out_alpha / self.act_alpha / 255.0
         #                out_act_alpha / (act_alpha * lut_out_alpha)
         luto_req_multiplier, luto_req_shiftmount = torch.frexp(luto_req_alpha)
-        self.luto_req_multiplier.data = (luto_req_multiplier * 2.**31).round().to(torch.uint32)
-        self.luto_req_shiftmount.data = (-luto_req_shiftmount + 31).round().clamp(0,64).to(torch.int8)
+        self.luto_req_multiplier.data = (luto_req_multiplier * 2.**7).round().to(torch.uint8)
+        self.luto_req_shiftmount.data = (-luto_req_shiftmount+7).round().clamp(0,32).to(torch.int8)
         
         self.out_alpha = out_alpha
         
@@ -250,36 +234,15 @@ class GELU_quantized(nn.Module):
                 # Integer Inference Mode
 
                 '''De-Smoothing and LUT lookup (with Quantize)'''
-                # index = Rshift(x.int() * self.rescale_multiplier.int(), self.rescale_shiftmount.int())
-                # index = Rshift(x.long() * self.rescale_multiplier.long(), self.rescale_shiftmount.long())
-                index = x.int() * self.de_smooth_vec.int()
-                index = Rshift(index.long().mul(self.luti_req_multiplier.long()), self.luti_req_shiftmount.long())
+                index = (x.long().mul(self.luti_req_multiplier.long())>>32).int()
+                index = Rshift(index, self.luti_req_shiftmount)
                 index = (index+(2**(self.lut_index_bit-1))).clamp(0, 2**self.lut_index_bit-1).to(dtype=torch.long, device=x.device)
                 index = self.lut[index]
 
                 x = index.int() * x.int()
-                x = Rshift(x.long().mul(self.luto_req_multiplier.long()), self.luto_req_shiftmount.long())
+                x = Rshift(x.mul(self.luto_req_multiplier.int()), self.luto_req_shiftmount)
                 x = x.clamp(-self.act_range, self.act_range).to(torch.int8)
                 return x
-
-                # Quantize x
-                input_deq = x.float().div(self.act_alpha)
-
-                # De-Smoothing and LUT lookup (with Quantize)
-                "1.702x (with de-smoothing)"
-                self.sig_input = input_deq * self.de_smooth_vec
-                output = F.sigmoid(self.sig_input)
-                output = output.mul(2**self.lut_data_bit-1).round().int()
-
-
-                "GeLU = x * sigmoid(1.702x)"
-                x = x.int() * output.int()
-                x = x.float().div(2**self.lut_data_bit-1).div(self.act_alpha)
-                x = x.mul(self.out_alpha).clamp(*INT_MAX["S8"]).to(torch.int8)
-
-                return x
-                
-                
             else:
                 # Quantize x
                 input_t = x * self.act_alpha
@@ -334,7 +297,6 @@ class LayerNorm_quantized(nn.LayerNorm):
         self.norm_bit = 15
         self.out_bit = 8
         self.offset = 12
-        self.lut_bits = 6
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_range = 2**(self.act_bit-1)-1              # Signed
@@ -389,7 +351,7 @@ class LayerNorm_quantized(nn.LayerNorm):
         out_req_alpha = out_alpha / (self.ln_alpha * self.wgt_alpha)
         out_req_multipler, out_req_shiftmount = torch.frexp(out_req_alpha)
         self.out_req_multiplier.data = out_req_multipler.mul(2**31).round().to(torch.uint32).view(self.out_req_multiplier.shape)
-        self.out_req_shiftmount.data = (-out_req_shiftmount + 31).clamp(0,64).to(torch.int8).view(self.out_req_multiplier.shape)
+        self.out_req_shiftmount.data = (-out_req_shiftmount - 1).clamp(0,32).to(torch.int8).view(self.out_req_multiplier.shape)
         self.dequant_alpha = self.act_alpha
         
         self.int_mode = True
@@ -413,15 +375,6 @@ class LayerNorm_quantized(nn.LayerNorm):
         weight_q = self.weight.mul(self.wgt_alpha).clamp(min=-self.wgt_range, max=self.wgt_range).round().to(torch.int8)
         self.weight = nn.Parameter(weight_q, requires_grad=False)
 
-        self.register_buffer(
-            "rsqrt_lut",
-            build_rsqrt_lut(
-                lut_bits=self.lut_bits,
-                frac_bits=self.offset,
-            ).to(self.weight.device)
-        )
-        
-        
 
         if self.bias is not None:
             bias_q = self.bias.mul(self.ln_alpha).mul(self.wgt_alpha).clamp(min=-self.bias_range, max=self.bias_range).round().to(torch.int32)
@@ -456,11 +409,6 @@ class LayerNorm_quantized(nn.LayerNorm):
 
         if self.quantize:
             if self.int_mode:
-                # try:
-                #     assert x.dtype == torch.int16, "Input tensor must be int16 in integer inference mode!"
-                #     x_q = x
-                # except AssertionError:
-                # x_q = x.mul(self.act_alpha).clamp(min=-self.act_range, max=self.act_range).round().to(torch.int32)
                 x_q = x.to(torch.int32)
             else:
                 x_t = x * self.act_alpha
@@ -532,8 +480,6 @@ class LayerNorm_quantized(nn.LayerNorm):
             '''Re-Quantization'''
             x_norm = Rshift( (x_norm * self.ln_req_multiplier), (self.ln_req_shiftmount+(renorm_shmnt>>1)) )
             x_norm = x_norm.clamp(min=-self.norm_range, max=self.norm_range)
-            # x_norm_req_save = x_norm.to('cpu').numpy()
-            # np.save('x_norm_req_fq.npy', x_norm_req_save)
 
             if self.bias is None:
                 bias = 0
@@ -544,11 +490,11 @@ class LayerNorm_quantized(nn.LayerNorm):
 
             '''Re-Quantize final output'''
             if self.int_mode:
-                out = Rshift(out.long().mul(self.out_req_multiplier.long()), self.out_req_shiftmount.long())
+                out = (out.long().mul(self.out_req_multiplier.long())>>32).int()
+                out = Rshift(out, self.out_req_shiftmount)
                 out = out.clamp(min=-self.out_range, max=self.out_range).to(torch.int8)
 
-                # return out, x_q.float().div(self.act_alpha)
-                return out, x_q
+                return out, x
             else:
                 return out.float() / self.ln_alpha / self.wgt_alpha, x_deq
         else:
@@ -1611,6 +1557,10 @@ class ResidualAttentionBlock_quantized(nn.Module):
         mlp_rescale_multiplier = out_alpha*2.**15 / self.mlp_ln.act_alpha
         self.mlp_res_req_multiplier.data = mlp_rescale_multiplier.round().clamp(*INT_MAX["U16"]).to(torch.uint16)
 
+        self.attn_ln = LayerNorm_int.copy_param(self.attn_ln)
+        self.mlp_ln = LayerNorm_int.copy_param(self.mlp_ln)
+        if self.cross_attn:
+            self.cross_attn_ln = LayerNorm_int.copy_param(self.cross_attn_ln)
         self.int_mode = True
         return self.int_mode
     
@@ -1840,6 +1790,7 @@ class AudioEncoder_quantized(nn.Module):
         for i in range(len(self.blocks)):
             self.blocks[i].convert_to_int_mode(self.blocks[i+1].attn_ln.act_alpha if i+1 < len(self.blocks) else self.ln_post.act_alpha)
         self.ln_post.convert_to_int_mode(out_alpha)
+        self.ln_post = LayerNorm_int.copy_param(self.ln_post)
 
         self.int_mode = True
         return self.int_mode
@@ -2069,6 +2020,7 @@ class TextDecoder_quantized(nn.Module):
             self.blocks[i].convert_to_int_mode(self.blocks[i+1].attn_ln.act_alpha if i+1 < len(self.blocks) else self.ln.act_alpha)
         
         self.ln.convert_to_int_mode(self.act_cf_alpha)
+        self.ln = LayerNorm_int.copy_param(self.ln)
         clf_req_alpha = self.act_logits_alpha / self.wgt_alpha / self.act_cf_alpha
         clf_req_alpha, clf_req_shmnt = torch.frexp(clf_req_alpha)
         clf_req_alpha = torch.round(clf_req_alpha * 2. ** 31).clamp(0,torch.iinfo(torch.uint32).max).to(torch.uint32)

@@ -41,8 +41,8 @@ def Rshift(x, N):
 
     try:
         if x.dtype is torch.int32:
-            ROUNDING_BIAS = (1 << (N-1).to(torch.int32).clamp(-32,32)) - torch.signbit(x).to(torch.int32)
-            return (x + ROUNDING_BIAS)>>(N.to(torch.int32).clamp(-32,32))
+            ROUNDING_BIAS = (1 << (N-1).to(torch.int32).clamp(0,32)) - torch.signbit(x).to(torch.int32)
+            return (x + ROUNDING_BIAS)>>(N.to(torch.int32).clamp(0,32))
         else:
             raise NotImplementedError("Rshift function only support int32 tensor!")
     except:

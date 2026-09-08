@@ -20,7 +20,15 @@ from .transcribe import transcribe as transcribe_function
 from .model_quant import *
 from .kernels import w8a8
 from .modules.linear import Linear_int
-from .modules.functional import Rshift, Fast_Inverse_Square_Root, Batch_Head_s8s8s32_GeMM, Batch_Head_u8s8s32_GeMM
+from .modules.functional import (
+    Rshift,
+    Fast_Inverse_Square_Root,
+    Batch_Head_s8s8s32_GeMM,
+    Batch_Head_u8s8s32_GeMM,
+    int_bit_length,
+    build_rsqrt_lut,
+    LUT_Based_Inverse_Square_Root
+)
 
 import matplotlib.pyplot as plt
 import os
@@ -42,155 +50,6 @@ __all__ = [
     ]
 
 
-# def Rshift(x:torch.Tensor, N):
-#     """Right Shift operation with Rounding-to-Nearest
-#     """
-#     '''
-#     PrePare a number add to result before right shift to realize rounding
-#     for q2.3 round to q2.3 as example:
-
-#     NOTE:POSITIVE EXAMPLE:
-#     =========================================================================
-#       0.375 = 'b00.011 -> 0 = 'b00.000  ||  0.875 = 'b00.111 -> 1 = 'b01.000
-#       ADD 0.5 'b00.100    ^             || ADD 0.5  'b00.100    ^
-#       ----------------    |             || -----------------    |
-#       0.875 = 'b00.111    |             ||  1.375 = 'b01.011    |
-#       MASK(RSHIFT3)XXX    |             || MASK(RSHIFT3) XXX    |
-#       ----------------    |             || -----------------    |
-#       0.000 = 'b00.000 -> 0             ||  1.000 = 'b01.000 -> 1
-#     =========================================================================
-#     NOTE:NEGATIVE EXAMPLE:                                                 
-#       -0.375 = 'b11.101 -> 0 = 'b00.000 || -0.675 = 'b11.011 -> -1 = 'b11.000
-#       ADD 0.375'b00.011    ^            || ADD 0.375'b00.011     ^
-#       -----------------    |            || -----------------     |
-#        0.000 = 'b00.000    |            || -0.500 = 'b11.100     |
-#       MASK(RSHIFT3) XXX    |            || MASK(RSHIFT3) XXX     |
-#       -----------------    |            || -----------------     |
-#        0.000 = 'b00.000 -> 0            || -1.000 = 'b11.000 -> -1
-#     =========================================================================
-#     Conclusion:
-#         for QM.N (Signed) Fixpoint Integer rounding, we need to add:
-#         for POSITIVE number: 2^(N-1)
-#         for NEGATIVE number: 2^(N-1) - 1
-#         So the rounding bias is: 2^(N-1) - signbit
-#     '''
-#     assert x.dtype is torch.int32, "Rshift function only support int32 tensor!"
-#     if _IS_ARM:
-#         return w8a8.Rshift(x, N)
-#     else:
-#         try:
-#             ROUNDING_BIAS = (1 << (N-1).to(torch.int32).clamp(-32,32)) - torch.signbit(x).int()
-#             return (x + ROUNDING_BIAS)>>N.to(torch.int32).clamp(-32,32)
-#         except:
-#             ROUNDING_BIAS = (1 << (N-1)) - torch.signbit(x).int()
-#             return (x + ROUNDING_BIAS)>>N
-
-
-
-# def Batch_Head_s8s8s32_GeMM(A: Tensor, B: Tensor):
-#     """Batch head matrix multiplication for quantized tensors
-#     Args:
-#         A (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (column-major)
-#         B (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (row-major)
-#     Returns:
-#         Tensor: [batch, n_head, n_ctx, n_ctx] int32 tensor
-#     """
-#     Out = torch.zeros((A.shape[0], A.shape[1], A.shape[2], B.shape[2]), dtype=torch.int32, device=A.device)
-#     if A.device.type == 'cuda':
-#         for i in range(A.shape[0]):
-#             for j in range(B.shape[1]):
-#                 Out[i][j] = int8_linear_matmul(A[i][j].contiguous(), B[i][j].contiguous())
-#     else:
-#         if _IS_ARM:
-#             for i in range(A.shape[0]):
-#                 for j in range(B.shape[1]):
-#                     Out[i][j] = w8a8.s8s8s32_gemm(A[i][j].contiguous(), B[i][j].contiguous())
-#         else:
-#             Out = A.to('cpu',torch.int32) @ B.to('cpu',torch.int32).transpose(-1,-2)
-#     return Out
-
-
-# def Batch_Head_u8s8s32_GeMM(A: Tensor, B: Tensor):
-#     """Batch head matrix multiplication for quantized tensors
-#     Args:
-#         A (Tensor): [batch, n_head, n_ctx, n_state] uint8 tensor (row-major)
-#         B (Tensor): [batch, n_head, n_ctx, n_state] int8 tensor (column-major)
-#     Returns:
-#         Tensor: [batch, n_head, n_ctx, n_ctx] int32 tensor
-#     """
-#     Out = torch.zeros((A.shape[0], A.shape[1], A.shape[2], B.shape[2]), dtype=torch.int32, device=A.device)
-#     if A.device.type == 'cuda':
-#         # shift uint8 to int8, then use int8 GEMM, finally shift zero point back
-#         A_shift = A.to(torch.int8) - 128
-#         for i in range(A.shape[0]):
-#             for j in range(B.shape[1]):
-#                 Out[i][j] = int8_linear_matmul(A_shift[i][j].contiguous(), B[i][j].contiguous())
-#                 Out[i][j] += (torch.sum(B[i][j].to(torch.int32), dim=1, keepdim=True) << 7).t()
-#     else:
-#         if _IS_ARM:
-#             for i in range(A.shape[0]):
-#                 for j in range(B.shape[1]):
-#                     Out[i][j] = w8a8.u8s8s32_gemm(A[i][j].contiguous(), B[i][j].contiguous())
-#         else:
-#             Out = A.to('cpu',torch.int32) @ B.to('cpu',torch.int32).transpose(-1,-2)
-#     return Out
-
-
-
-# def Fast_Inverse_Square_Root(x, offset, Newton_iter: int = 0, overflow_prevent_offset: int = 0):
-#     '''TODO: Very critical problem
-#     The Newton's method iteration in Fixpoint q12.20 (or too much fraction) format
-#     may overflow when using int32 format. And if using less decimal bits
-#     (like q8.24), the precision is not enough to get good accuracy. This Problem can
-#     be solved by using int64 format, but the speed and support of hardware will be
-#     a new problem.
-#     It is a trade-off between supportment and useable inference.
-#     2025.11.13 Chen96013
-#     '''
-#     '''fast inverse square root in flaot32 format'''
-#     zero_pos = (x == 0)
-#     i = x.type(torch.float32).view(dtype=torch.int32)
-#     i = int(0x5f3759df) - (i >> 1) # initial point with magic number
-
-#     '''convert potential float32 in int32 to fixed point q12.20 format'''
-#     # try new convert method
-#     # add offset to exponent directly then convert to fixed point (int32)
-#     y = (i + (offset<<23))
-#     y = y.view(torch.float32)
-#     y = y.to(torch.int32)
-#     # without this, inverse square root of zero is infinity, here we set it to one directly
-#     # this means do not need normalize when input (variation) is zero
-
-    
-#     '''iteration of Newton's method (in fixed point q12.20 format)'''
-#     three = torch.tensor(3*2**offset, dtype=torch.int32) # 3 in fixed point q12.20 format
-#     # threehalfs = 0x0030_0000
-#     # NOTE: actually threehalfs = 1.5 * (2**20) = 0x0018_0000
-#     # but we store 3*2**20
-#     # this is because in Newton's method, we have 1.5 - 0.5 * t
-#     # we can do (3 - t)>>1 to preserve more precision
-
-#     # NOTE: @overflow_prvent_offset this is a hack to prevent overflow during multiplication
-#     # RShift both y and threehalfs-t by overflow_prevent_offset
-#     # so that the multiplication result won't overflow int32
-#     # and the final result is LShifted back by overflow_prevent_offset
-#     # the RShift is represented as RShift lesser when point regression
-#     # A * B >> offset
-#     #          ^ this is point regression, recover the point by right shifting offset bits
-
-#     def Newton_iteration(y, x, three, offset):
-#         t = Rshift(x.mul(y).int(),offset).mul(y)
-#         # NOTE: here we do not need Rshmnt because var is q32.0 (integer), y2 is q12.20
-#         # first iteration of Newton's method
-#         y = Rshift(y.mul( three - t ).int(), (offset+1))
-#         # this result is in q12.20 format, we can directly use it for next iteration or return it
-#         return y
-
-#     # Do Newton iterations Newton_iter times
-#     for i in range(Newton_iter):
-#         y = Newton_iteration(y, x, three, offset)
-
-#     return y
 
 
 @dataclass
@@ -235,7 +94,7 @@ class GELU_int(nn.Module):
 
         '''Quantization Parameters initialization'''
         self.lut = nn.Parameter(torch.arange(0, self.lut_upper+1).to(torch.uint8), requires_grad=False)
-        self.luti_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint8), requires_grad=False)
+        self.luti_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint32), requires_grad=False)
         self.luti_req_shiftmount = nn.Parameter(torch.zeros(channel_num, dtype=torch.int8), requires_grad=False)
         self.luto_req_multiplier = nn.Parameter(torch.ones(out_channel_num, dtype=torch.uint8), requires_grad=False)
         self.luto_req_shiftmount = nn.Parameter(torch.zeros(out_channel_num, dtype=torch.int8), requires_grad=False)
@@ -246,10 +105,9 @@ class GELU_int(nn.Module):
         assert x.dtype == torch.int8, "Input tensor must be int8 in integer inference mode!"
         # Integer Inference Mode
 
-        '''De-Smoothing and LUT lookup (with Quantize)'''
-        index = x.int() * self.de_smooth_vec.int()
-        index = Rshift(index.mul(self.luti_req_multiplier.int()), self.luti_req_shiftmount)
-        index = (index+8).clamp(0, self.lut_upper).to(dtype=torch.long, device=x.device)
+        index = (x.long().mul(self.luti_req_multiplier.long())>>32).int()
+        index = Rshift(index, self.luti_req_shiftmount)
+        index = (index+self.lut_upper).clamp(0, self.lut_upper).to(dtype=torch.long, device=x.device)
         index = self.lut[index]
 
         x = index.int() * x.int()
@@ -262,13 +120,14 @@ class GELU_int(nn.Module):
 class LayerNorm_int(nn.LayerNorm):
     def __init__(
         self,
-        normalized_shape: int,
+        normalized_shape: Union[int, List[int], torch.Size],
         eps: float = 1e-5,
         elementwise_affine: bool = True,
+        device: torch.device = "cpu",
         debug: bool = False
     ) -> None:
         '''inherit from nn.LayerNorm'''
-        super().__init__(normalized_shape, eps, elementwise_affine)
+        super().__init__(normalized_shape, eps, elementwise_affine, device=device)
         
         '''meta parameters'''
         self.debug = debug
@@ -285,23 +144,23 @@ class LayerNorm_int(nn.LayerNorm):
         self.norm_out_range = 127   # Signed, 2**(self.norm_out_bit-1)-1
 
         '''Quantization Parameters initialization'''
-        self.weight = nn.Parameter(torch.ones_like(self.weight, dtype=torch.int8), requires_grad=False)
+        self.weight = nn.Parameter(torch.ones_like(self.weight, dtype=torch.int8, device=device), requires_grad=False)
         if self.bias is not None:
-            self.bias = nn.Parameter(torch.zeros_like(self.bias, dtype=torch.int32), requires_grad=False)
-        self.ln_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8), requires_grad=False)
-        self.ln_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
-        self.out_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8), requires_grad=False)
-        self.out_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
-    
+            self.bias = nn.Parameter(torch.zeros_like(self.bias, dtype=torch.int32, device=device), requires_grad=False)
+        self.ln_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8, device=device), requires_grad=False)
+        self.ln_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8, device=device), requires_grad=False)
+        self.out_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint32, device=device), requires_grad=False)
+        self.out_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8, device=device), requires_grad=False)
+
 
     def forward(self, x: Tensor) -> Tensor:
         '''LayerNorm with Quantize function
         '''
         assert x.dtype == torch.int16, "Input tensor must be int16 in integer inference mode!"
+        res = x.clone()
 
         norm_number = self.normalized_shape[0]
         # replace norm division to multiplication + right shift
-        norm_case_check = [1280, 1024, 768, 512, 384]
         # 1/1280 = (1/5) * 2^-8 = 1.6 * 2^-11 approx 1.5 * 2^-11
         # 1/1024 = 1 * 2^-10
         # 1/768 = (1/3) * 2^-8 = 1.3333 * 2^-10 approx 1.375 * 2^-10
@@ -315,7 +174,7 @@ class LayerNorm_int(nn.LayerNorm):
             384: [False,True,True]    # 'b1.011,  d'1.375
         }
         def mul_by_shift_multiplier(x, multiplier):
-            out = x
+            out = x.clone()
             if multiplier[0]:
                 out += (x >> 1) # += multiply by 0.5
             if multiplier[1]:
@@ -331,53 +190,64 @@ class LayerNorm_int(nn.LayerNorm):
             512:9,
             384:9
         }
-        if norm_number not in norm_case_check:
-            print("norm size is: ", norm_number)
-            print("Currently LayerNorm only support norm size in: ", norm_case_check)
-            breakpoint()
-        else:
-            norm_mul = norm_multiplier[norm_number]
-            norm_shmnt = norm_shiftmount[norm_number]
+        
+        norm_mul = norm_multiplier[norm_number]
+        norm_shmnt = norm_shiftmount[norm_number]
 
-        mean = torch.sum(x, dim=-1, keepdim=True).int()
+        mean = torch.sum(x.int(), dim=-1, keepdim=True).int()
         mean = mul_by_shift_multiplier(mean, norm_mul) >> norm_shmnt # reduce by mul & rshift, avoid division
         sub_square = (x - mean).abs()**2
 
-        max_bit_length = sub_square.abs().max(dim=-1, keepdim=True).values.log2().ceil().int() # max bit usage in dev_square_q's last dim (hidden dim)
-        # OR you can say max clz(count leading zero) in dev_square_q's last dim
-        renorm_shmnt = (max_bit_length - 16).clamp(min=0) # assume 23 bits of every number in dev_square_q's last dim is enough (fp32 has 23 bits mantissa)
+        max_bit_length = int_bit_length(sub_square.max(dim=-1, keepdim=True).values) # max bit usage in sub_square's last dim (hidden dim)
+        # OR you can say max clz(count leading zero) in sub_square's last dim
+        renorm_shmnt = (max_bit_length - 16).clamp(min=0) # assume 23 bits of every number in sub_square's last dim is enough (fp32 has 23 bits mantissa)
         # this means, we find if anyone is more than 16 bits
         # if true, every number in the group Rshift by the same amount to prevent overflow in the following summation
-        renorm_shmnt = renorm_shmnt & 0xFFFFFFFE # make it even number
+        renorm_shmnt = (renorm_shmnt + 1) & ~1
 
-        var = torch.sum((Rshift(sub_square, renorm_shmnt)), dim=-1, keepdim=True)
-        var = mul_by_shift_multiplier(var, norm_mul) >> norm_shmnt # reduce by mul & rshift, avoid division
+        var = torch.sum((Rshift(sub_square, renorm_shmnt)), dim=-1, keepdim=True).int()
+        var = (mul_by_shift_multiplier(var, norm_mul) >> norm_shmnt).int() # reduce by mul & rshift, avoid division
         invstd = Fast_Inverse_Square_Root(var, self.offset, 2) # this is in fixed point q20.12 format
         x = ((x - mean) * invstd)
 
-        # x_norm_save = x.to('cpu').numpy()
-        # np.save('x_norm_int.npy', x_norm_save)
 
-        '''Re-Quantization'''
+        '''Fixedpoint Multiplication'''
         x = Rshift( (x * self.ln_req_multiplier), (self.ln_req_shiftmount+(renorm_shmnt>>1)) )
         x = x.clamp(min=-self.act_range, max=self.act_range)
 
-        # x_norm_req_save = x.to('cpu').numpy()
-        # np.save('x_norm_req_int.npy', x_norm_req_save)
-
         if self.bias is None:
-            bias = 0
+            x = x.mul(self.weight.int())
         else:
-            bias = self.bias
-
-        x = (x.mul(self.weight.int()) + bias)
+            x = (x.mul(self.weight.int()) + self.bias)
 
         '''Re-Quantize final output'''
-        x = Rshift(x.mul(self.out_req_multiplier.int()), self.out_req_shiftmount.int())
+        x = (x.long().mul(self.out_req_multiplier.long())>>32).int()
+        x = Rshift(x, self.out_req_shiftmount)
         x = x.clamp(min=-self.norm_out_range, max=self.norm_out_range).to(torch.int8)
 
-        return x
+        return x, res
 
+    @staticmethod
+    def copy_param(quant_layer):
+        if hasattr(quant_layer, 'quantize') and hasattr(quant_layer, 'int_mode'):
+            # this is our self define quantized layernorm
+            if quant_layer.quantize and quant_layer.int_mode:
+                new_layer = LayerNorm_int(
+                    quant_layer.normalized_shape,
+                    device=quant_layer.weight.device
+                    )
+                if new_layer.weight is not None:
+                    new_layer.weight.data.copy_(quant_layer.weight.data)
+                    new_layer.bias.data.copy_(quant_layer.bias.data)
+                new_layer.ln_req_multiplier.data.copy_(quant_layer.ln_req_multiplier.data)
+                new_layer.ln_req_shiftmount.data.copy_(quant_layer.ln_req_shiftmount.data)
+                new_layer.out_req_multiplier.data.copy_(quant_layer.out_req_multiplier.data)
+                new_layer.out_req_shiftmount.data.copy_(quant_layer.out_req_shiftmount.data)
+            else:
+                print("model not quant yet!")
+        else:
+            raise NotImplementedError("The input layer is not i-whisper quantize LayerNorm")
+        return new_layer.to(quant_layer.weight.device)
 
 
 # class Linear_int(nn.Linear):
@@ -1063,7 +933,7 @@ class Whisper_int(nn.Module):
 
 
 
-def Build_from_Quant(Orig:Whisper_quantized)->Whisper_int:
+def Build_from_Quant(Orig)->Whisper_int:
     '''Build integer inference model from quantized model'''
     assert Orig.quantize, "Input model is not quantized model!"
     result = Orig.convert_to_int_mode()
