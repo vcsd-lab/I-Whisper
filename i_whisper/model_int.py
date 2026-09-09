@@ -69,18 +69,21 @@ class ModelDimensions:
 class GELU_int(nn.Module):
     def __init__(
         self,
-        approximate: str = 'none',
         channel_num : int = 1,
-        out_channel_num : int = 1,
+        out_channel_num: int = 1,
         debug: bool = False,
     ) -> None:
         '''inherit from nn.Module'''
         super().__init__()
 
         '''meta parameters'''
-        self.approximate = approximate
         self.channel_num = channel_num
-        self.out_channel_num = out_channel_num
+        if channel_num == 1:
+            self.out_channel_num = out_channel_num
+        else:
+            self.out_channel_num = channel_num
+        # Because ReQuant of multi-channel always need multi-scale
+        # So we need to set out_channel_num for multi-channel GELU
         self.debug = debug
 
         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
@@ -91,6 +94,7 @@ class GELU_int(nn.Module):
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_range = 127# 2^(act_bit-1)-1
         self.lut_upper = 15 # 2^(lut_index_bit)-1
+        self.lut_zero = 8  # 2^(lut_data_bit-1)
 
         '''Quantization Parameters initialization'''
         self.lut = nn.Parameter(torch.arange(0, self.lut_upper+1).to(torch.uint8), requires_grad=False)
@@ -98,7 +102,7 @@ class GELU_int(nn.Module):
         self.luti_req_shiftmount = nn.Parameter(torch.zeros(channel_num, dtype=torch.int8), requires_grad=False)
         self.luto_req_multiplier = nn.Parameter(torch.ones(out_channel_num, dtype=torch.uint8), requires_grad=False)
         self.luto_req_shiftmount = nn.Parameter(torch.zeros(out_channel_num, dtype=torch.int8), requires_grad=False)
-        self.de_smooth_vec = nn.Parameter(torch.ones(self.channel_num, dtype=torch.uint8), requires_grad=False)
+        self.de_smooth_vec = nn.Parameter(torch.ones(channel_num, dtype=torch.uint8), requires_grad=False)
     
 
     def forward(self, x: Tensor) -> Tensor:
@@ -107,14 +111,33 @@ class GELU_int(nn.Module):
 
         index = (x.long().mul(self.luti_req_multiplier.long())>>32).int()
         index = Rshift(index, self.luti_req_shiftmount)
-        index = (index+self.lut_upper).clamp(0, self.lut_upper).to(dtype=torch.long, device=x.device)
+        index = (index+self.lut_zero).clamp(0, self.lut_upper).to(dtype=torch.long, device=x.device)
         index = self.lut[index]
 
         x = index.int() * x.int()
         x = Rshift(x.mul(self.luto_req_multiplier.int()), self.luto_req_shiftmount)
         x = x.clamp(-self.act_range, self.act_range).to(torch.int8)
         return x
+    
+    @staticmethod
+    def copy_param(quant_layer: 'GELU_quantized') -> None:
+        """Copy parameters from quantized layer to new layer
+        Args:
+            new_layer (GELU_int): target GELU_int layer
+            quant_layer (GELU_int): source GELU_int layer
+        """
+        new_layer = GELU_int(
+            channel_num=quant_layer.channel_num,
+            out_channel_num=quant_layer.out_channel_num
+        )
+        new_layer.lut.data.copy_(quant_layer.lut.data)
+        new_layer.luti_req_multiplier.data.copy_(quant_layer.luti_req_multiplier.data)
+        new_layer.luti_req_shiftmount.data.copy_(quant_layer.luti_req_shiftmount.data)
+        new_layer.luto_req_multiplier.data.copy_(quant_layer.luto_req_multiplier.data)
+        new_layer.luto_req_shiftmount.data.copy_(quant_layer.luto_req_shiftmount.data)
+        new_layer.de_smooth_vec.data.copy_(quant_layer.de_smooth_vec.data)
 
+        return new_layer.to(quant_layer.lut.device)
 
 
 class LayerNorm_int(nn.LayerNorm):

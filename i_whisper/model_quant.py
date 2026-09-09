@@ -31,7 +31,7 @@ from .modules.functional import (
     LUT_Based_Inverse_Square_Root
 )
 from .modules.linear import Linear8, Linear32
-from .model_int import LayerNorm_int
+from .model_int import (GELU_int, LayerNorm_int)
 
 import matplotlib.pyplot as plt
 import os
@@ -96,6 +96,12 @@ class GELU_quantized(nn.Module):
         '''meta parameters'''
         self.approximate = approximate
         self.channel_num = channel_num
+        if channel_num == 1:
+            self.out_channel_num = out_channel_num
+        else:
+            self.out_channel_num = channel_num
+        # Because ReQuant of multi-channel always need multi-scale
+        # So we need to set out_channel_num for multi-channel GELU
         self.calibrate = calibrate
         self.quantize = quantize  
         self.int_mode = int_mode
@@ -119,8 +125,8 @@ class GELU_quantized(nn.Module):
         self.lut[-1] = 2**self.lut_data_bit -1
         self.luti_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint32), requires_grad=False)
         self.luti_req_shiftmount = nn.Parameter(torch.zeros(channel_num, dtype=torch.int8), requires_grad=False)
-        self.luto_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint8), requires_grad=False)
-        self.luto_req_shiftmount = nn.Parameter(torch.zeros(channel_num, dtype=torch.int8), requires_grad=False)
+        self.luto_req_multiplier = nn.Parameter(torch.ones(out_channel_num, dtype=torch.uint8), requires_grad=False)
+        self.luto_req_shiftmount = nn.Parameter(torch.zeros(out_channel_num, dtype=torch.int8), requires_grad=False)
         if self.quantize and self.int_mode:
             self.de_smooth_vec = nn.Parameter(torch.ones(self.channel_num, dtype=torch.uint8), requires_grad=False)
         else:
@@ -1561,6 +1567,7 @@ class ResidualAttentionBlock_quantized(nn.Module):
         self.mlp_ln = LayerNorm_int.copy_param(self.mlp_ln)
         if self.cross_attn:
             self.cross_attn_ln = LayerNorm_int.copy_param(self.cross_attn_ln)
+        self.mlp[1] = GELU_int.copy_param(self.mlp[1])
         self.int_mode = True
         return self.int_mode
     
@@ -1791,6 +1798,8 @@ class AudioEncoder_quantized(nn.Module):
             self.blocks[i].convert_to_int_mode(self.blocks[i+1].attn_ln.act_alpha if i+1 < len(self.blocks) else self.ln_post.act_alpha)
         self.ln_post.convert_to_int_mode(out_alpha)
         self.ln_post = LayerNorm_int.copy_param(self.ln_post)
+        self.gelu1 = GELU_int.copy_param(self.gelu1)
+        self.gelu2 = GELU_int.copy_param(self.gelu2)
 
         self.int_mode = True
         return self.int_mode
