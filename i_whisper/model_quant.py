@@ -31,7 +31,7 @@ from .modules.functional import (
     LUT_Based_Inverse_Square_Root
 )
 from .modules.linear import Linear8, Linear32
-from .model_int import (GELU_int, LayerNorm_int)
+from .model_int import (GELU_int, LayerNorm_int, Conv1d_int)
 
 import matplotlib.pyplot as plt
 import os
@@ -1798,6 +1798,9 @@ class AudioEncoder_quantized(nn.Module):
             self.blocks[i].convert_to_int_mode(self.blocks[i+1].attn_ln.act_alpha if i+1 < len(self.blocks) else self.ln_post.act_alpha)
         self.ln_post.convert_to_int_mode(out_alpha)
         self.ln_post = LayerNorm_int.copy_param(self.ln_post)
+
+        self.conv1 = Conv1d_int.copy_param(self.conv1)
+        self.conv2 = Conv1d_int.copy_param(self.conv2)
         self.gelu1 = GELU_int.copy_param(self.gelu1)
         self.gelu2 = GELU_int.copy_param(self.gelu2)
 

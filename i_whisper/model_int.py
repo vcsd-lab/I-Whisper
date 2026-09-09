@@ -376,22 +376,16 @@ class Conv1d_int(nn.Conv1d):
         padding: int = 0,
         dilation: int = 1,
         groups: int = 1,
-        bias: bool = True,
-        debug: bool = False
+        bias: bool = True
     ):
         '''inherit from nn.Conv1d'''
         super().__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
-        '''meta parameters'''
-        self.debug = debug
-
-        '''Quantization Hyper-parameters (Bit-width of Parameters)'''
-        self.act_bit = 8
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_range = 127    # Signed, 2**(self.act_bit-1)-1
 
         '''Quantization Parameters initialization'''
-        self.req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8), requires_grad=False)
+        self.req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint32), requires_grad=False)
         self.req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
         
         '''weight re-initialization for quantization'''
@@ -406,24 +400,65 @@ class Conv1d_int(nn.Conv1d):
         self, x: Tensor, weight: Tensor, bias: Optional[Tensor]
     ) -> Tensor:
         assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
-        out = torch.nn.functional.unfold(x.unsqueeze(-1).float(), kernel_size=(self.kernel_size[0],1),
-            dilation=(self.dilation[0],1), padding=(self.padding[0],0), stride=(self.stride[0],1)).permute(0,2,1).to(torch.int8)
+        # out = torch.nn.functional.unfold(x.unsqueeze(-1).float(), kernel_size=(self.kernel_size[0],1),
+        #     dilation=(self.dilation[0],1), padding=(self.padding[0],0), stride=(self.stride[0],1)).permute(0,2,1).to(torch.int8)
+        
+        x = torch.nn.functional.pad(
+            x,
+            (self.padding[0], self.padding[0])
+        )
+
+        out = x.unfold(
+            dimension=2,
+            size=self.kernel_size[0],
+            step=self.stride[0]
+        )
+
+        out = (
+            out
+            .permute(0, 2, 1, 3)
+            .contiguous()
+            .view(
+                x.shape[0],
+                -1,
+                self.in_channels * self.kernel_size[0]
+            )
+        )
         
         if x.device.type == 'cuda':
             out = int8_linear_matmul(out.contiguous(), self.weight)
         else: # using cpu
-            if _IS_ARM:
-                out = w8a8.s8s8s32_gemm(out.contiguous(), self.weight)
-            else:
-                out = torch.matmul(out.int(), self.weight.int().t())
+            out = torch.matmul(out.int(), self.weight.int().t())
         
         if self.bias is not None:
             out += self.bias
         out = out.permute(0,2,1)
+
         '''Re-Quantization'''
-        out = Rshift(out.mul(self.req_multiplier.int()), self.req_shiftmount)
+        out = (out.long().mul(self.req_multiplier.long()) >> 32).int()
+        out = Rshift(out, self.req_shiftmount)
         out = out.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
+
         return out
+    
+    @staticmethod
+    def copy_param(quant_layer):
+        new_layer = Conv1d_int(
+            in_channels=quant_layer.in_channels,
+            out_channels=quant_layer.out_channels,
+            kernel_size=quant_layer.kernel_size[0],
+            stride=quant_layer.stride[0],
+            padding=quant_layer.padding[0],
+            dilation=quant_layer.dilation[0],
+            groups=quant_layer.groups,
+            bias=quant_layer.bias is not None
+        )
+        new_layer.weight.data.copy_(quant_layer.weight.data)
+        if quant_layer.bias is not None:
+            new_layer.bias.data.copy_(quant_layer.bias.data)
+        new_layer.req_multiplier.data.copy_(quant_layer.req_multiplier.data)
+        new_layer.req_shiftmount.data.copy_(quant_layer.req_shiftmount.data)
+        return new_layer.to(quant_layer.weight.device)
 
 
 
