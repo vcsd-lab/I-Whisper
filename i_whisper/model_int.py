@@ -514,16 +514,12 @@ class ResidualAttentionBlock_int(nn.Module):
         self,
         n_state: int,
         n_head: int,
-        encoder: bool = False,
         cross_attention: bool = False,
-        debug: bool = False
     ):
         '''inherit from nn.Module'''
         super().__init__()
 
         '''meta parameters'''
-        self.encoder = encoder
-        self.debug = debug
 
         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
         self.act_attn_bit = 15
@@ -536,38 +532,25 @@ class ResidualAttentionBlock_int(nn.Module):
         self.act_mlp_range = 16383          # Signed
 
         '''Quantization Parameters initialization'''
-        self.attn_res_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8), requires_grad=False)
-        self.attn_res_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
-        self.cross_attn_res_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8), requires_grad=False)
-        self.cross_attn_res_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
-        self.mlp_res_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8), requires_grad=False)
-        self.mlp_res_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
+        self.attn_res_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint16), requires_grad=False)
+        self.cross_attn_res_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint16), requires_grad=False)
+        self.mlp_res_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint16), requires_grad=False)
 
         '''sub-modules initialization'''
         # Attention Module
-        self.attn = MultiHeadAttention_int(
-            n_state, n_head, # Layer config
-            encoder=encoder)
+        self.attn = MultiHeadAttention_int(n_state, n_head)
         self.attn_ln = LayerNorm_int(n_state)
 
         # Cross-Attention Module (if needed)
-        self.cross_attn = (
-            MultiHeadAttention_int(
-                n_state, n_head, # Layer config
-                encoder=encoder, cross_attn = cross_attention) if cross_attention else None
-        )
+        self.cross_attn = MultiHeadAttention_int(n_state, n_head) if cross_attention else None
         self.cross_attn_ln = LayerNorm_int(n_state) if cross_attention else None
 
         # MLP Module
         self.n_mlp = n_state * 4
         self.mlp = nn.Sequential(
-            Linear_int(
-                n_state, self.n_mlp, # Layer config
-                encoder=encoder, mlp0 = True),
+            Linear8(n_state, self.n_mlp),
             GELU_int(channel_num = self.n_mlp, out_channel_num = self.n_mlp),
-            Linear_int(
-                self.n_mlp, n_state, # Layer config
-                encoder=encoder,mlp2=True, Bout=32)
+            Linear32(self.n_mlp, n_state)
         )
         self.mlp_ln = LayerNorm_int(n_state)
 
@@ -580,43 +563,67 @@ class ResidualAttentionBlock_int(nn.Module):
         kv_cache: Optional[dict] = None,
     ):
         '''Compute LayerNorm, and LayerNorm returns both normalized output and non-quantized/quantized input'''
-        module_inout = self.attn_ln(x)
+        module_inout = self.attn_ln(x)[0]
 
         '''Compute Attention'''
         module_inout = self.attn(module_inout, mask=mask, kv_cache=kv_cache)
 
         '''Residual connection with/without quantization'''
-        x = x.int().mul(self.attn_res_req_multiplier)
-        x = Rshift(module_inout + x, self.attn_res_req_shiftmount)
+        x = x.int().mul(self.attn_res_req_multiplier.int())
+        x = Rshift(module_inout + x, 15)
         x = x.clamp(-self.act_attn_range, self.act_attn_range).to(torch.int16)
 
         '''if exists Cross-Attention Module, compute Cross-Attention'''
         if self.cross_attn:
 
             '''Compute LayerNorm, and LayerNorm returns both normalized output and non-quantized/quantized input'''
-            module_inout = self.cross_attn_ln(x)
+            module_inout = self.cross_attn_ln(x)[0]
 
             '''Compute Cross-Attention, because cross-attention so need xa input (xa stands for x audio)'''
             module_inout = self.cross_attn(module_inout, xa, kv_cache=kv_cache)
 
             '''Residual connection with/without quantization'''
-            x = x.int().mul(self.cross_attn_res_req_multiplier)
-            x = Rshift(module_inout + x, self.cross_attn_res_req_shiftmount)
+            x = x.int().mul(self.cross_attn_res_req_multiplier.int())
+            x = Rshift(module_inout + x, 15)
             x = x.clamp(-self.act_cross_attn_range, self.act_cross_attn_range).to(torch.int16)
 
         '''Compute LayerNorm, and LayerNorm returns both normalized output and non-quantized/quantized input'''
-        module_inout = self.mlp_ln(x)
+        module_inout = self.mlp_ln(x)[0]
         
         '''Compute MLP'''
         module_inout = self.mlp(module_inout)
         
         '''Residual connection with/without quantization'''
-        x = x.int().mul(self.mlp_res_req_multiplier)
-        x = Rshift(module_inout + x, self.mlp_res_req_shiftmount)
+        x = x.int().mul(self.mlp_res_req_multiplier.int())
+        x = Rshift(module_inout + x, 15)
         x = x.clamp(-self.act_mlp_range, self.act_mlp_range).to(torch.int16)
 
 
         return x
+    
+    @staticmethod
+    def copy_param(quant_layer):
+        new_layer = ResidualAttentionBlock_int(
+            n_state=quant_layer.attn_ln.normalized_shape[0],
+            n_head=quant_layer.attn.n_head,
+            cross_attention=quant_layer.cross_attn is not None
+        )
+        new_layer.attn_res_req_multiplier.data.copy_(quant_layer.attn_res_req_multiplier.data)
+        new_layer.cross_attn_res_req_multiplier.data.copy_(quant_layer.cross_attn_res_req_multiplier.data)
+        new_layer.mlp_res_req_multiplier.data.copy_(quant_layer.mlp_res_req_multiplier.data)
+        new_layer.attn = MultiHeadAttention_int.copy_param(quant_layer.attn)
+        new_layer.attn_ln = LayerNorm_int.copy_param(quant_layer.attn_ln)
+        if quant_layer.cross_attn is not None:
+            new_layer.cross_attn = MultiHeadAttention_int.copy_param(quant_layer.cross_attn)
+            new_layer.cross_attn_ln = LayerNorm_int.copy_param(quant_layer.cross_attn_ln)
+        new_layer.mlp = nn.Sequential(
+            Linear8.copy_param(quant_layer.mlp[0]),
+            GELU_int.copy_param(quant_layer.mlp[1]),
+            Linear32.copy_param(quant_layer.mlp[2])
+        )
+        new_layer.mlp_ln = LayerNorm_int.copy_param(quant_layer.mlp_ln)
+
+        return new_layer.to(quant_layer.attn_res_req_multiplier.device)
 
 
 

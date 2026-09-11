@@ -31,7 +31,7 @@ from .modules.functional import (
     LUT_Based_Inverse_Square_Root
 )
 from .modules.linear import Linear8, Linear32
-from .model_int import (GELU_int, LayerNorm_int, Conv1d_int, MultiHeadAttention_int)
+from .model_int import (GELU_int, LayerNorm_int, Conv1d_int, MultiHeadAttention_int, ResidualAttentionBlock_int)
 
 import matplotlib.pyplot as plt
 import os
@@ -1529,8 +1529,8 @@ class ResidualAttentionBlock_quantized(nn.Module):
         self.mlp[0].convert_to_int_mode(self.mlp[1].act_alpha)
         self.mlp[1].convert_to_int_mode(self.mlp[2].act_alpha)
         self.mlp[2].convert_to_int_mode(out_alpha*2.**16, is_outlinear=True)  # output de-quant to float
-        self.mlp[0] = Linear8.copy_param(self.mlp[0])
-        self.mlp[2] = Linear32.copy_param(self.mlp[2])
+        # self.mlp[0] = Linear8.copy_param(self.mlp[0])
+        # self.mlp[2] = Linear32.copy_param(self.mlp[2])
         self.out_alpha = out_alpha
         gc.collect()
         torch.cuda.empty_cache()
@@ -1553,18 +1553,18 @@ class ResidualAttentionBlock_quantized(nn.Module):
         mlp_rescale_multiplier = out_alpha*2.**15 / self.mlp_ln.act_alpha
         self.mlp_res_req_multiplier.data = mlp_rescale_multiplier.round().clamp(*INT_MAX["U16"]).to(torch.uint16)
 
-        self.attn_ln = LayerNorm_int.copy_param(self.attn_ln)
-        self.mlp_ln = LayerNorm_int.copy_param(self.mlp_ln)
-        if self.cross_attn:
-            self.cross_attn_ln = LayerNorm_int.copy_param(self.cross_attn_ln)
-        self.mlp[1] = GELU_int.copy_param(self.mlp[1])
-        self.attn = MultiHeadAttention_int.copy_param(self.attn)
-        if self.cross_attn:
+        # self.attn_ln = LayerNorm_int.copy_param(self.attn_ln)
+        # self.mlp_ln = LayerNorm_int.copy_param(self.mlp_ln)
+        # if self.cross_attn:
+        #     self.cross_attn_ln = LayerNorm_int.copy_param(self.cross_attn_ln)
+        # self.mlp[1] = GELU_int.copy_param(self.mlp[1])
+        # self.attn = MultiHeadAttention_int.copy_param(self.attn)
+        # if self.cross_attn:
         #     self.cross_attn.query = Linear8.copy_param(self.cross_attn.query)
         #     self.cross_attn.key = Linear8.copy_param(self.cross_attn.key)
         #     self.cross_attn.value = Linear8.copy_param(self.cross_attn.value)
         #     self.cross_attn.out = Linear32.copy_param(self.cross_attn.out)
-            self.cross_attn = MultiHeadAttention_int.copy_param(self.cross_attn)
+        #     self.cross_attn = MultiHeadAttention_int.copy_param(self.cross_attn)
         self.int_mode = True
         return self.int_mode
     
@@ -1801,6 +1801,8 @@ class AudioEncoder_quantized(nn.Module):
         self.gelu1 = GELU_int.copy_param(self.gelu1)
         self.gelu2 = GELU_int.copy_param(self.gelu2)
 
+        for i in range(len(self.blocks)):
+            self.blocks[i] = ResidualAttentionBlock_int.copy_param(self.blocks[i])
         self.int_mode = True
         return self.int_mode
     
@@ -2038,6 +2040,8 @@ class TextDecoder_quantized(nn.Module):
         self.clf_req_shiftmount.data = clf_req_shmnt.view(self.clf_req_shiftmount.shape)
         
         self.mask = (self.mask==float('-inf'))
+        for i in range(len(self.blocks)):
+            self.blocks[i] = ResidualAttentionBlock_int.copy_param(self.blocks[i])
 
         self.int_mode = True
         return self.int_mode
