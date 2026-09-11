@@ -31,7 +31,7 @@ from .modules.functional import (
     LUT_Based_Inverse_Square_Root
 )
 from .modules.linear import Linear8, Linear32
-from .model_int import (GELU_int, LayerNorm_int, Conv1d_int)
+from .model_int import (GELU_int, LayerNorm_int, Conv1d_int, MultiHeadAttention_int)
 
 import matplotlib.pyplot as plt
 import os
@@ -1108,17 +1108,15 @@ class MultiHeadAttention_quantized(nn.Module):
         self.act_alpha_q = torch.nn.Parameter(torch.ones(1))
         self.act_alpha_k = torch.nn.Parameter(torch.ones(1))
         self.act_alpha_v = torch.nn.Parameter(torch.ones(1))
-        self.qk_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.int32), requires_grad=False)
+        self.qk_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8), requires_grad=False)
         self.qk_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
-        self.av_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.int32), requires_grad=False)
+        self.av_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8), requires_grad=False)
         self.av_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
-        # self.qk_offset = 7
         self.register_buffer(
             "qk_frac_bits",
             torch.tensor(7, dtype=torch.int32)
         )
         self.rsqrt_offset = 16
-        self.lut_bits = 6
 
         '''sub-modules initialization'''
         self.query = Linear_quantized(
@@ -1173,14 +1171,6 @@ class MultiHeadAttention_quantized(nn.Module):
         # CHECK: self.running_num > 0
         assert self.running_num > 0, "Please calibrate quantization parameters before quantizing!"
 
-        self.register_buffer(
-            "rsqrt_lut",
-            build_rsqrt_lut(
-                lut_bits=self.lut_bits,
-                frac_bits=self.rsqrt_offset,
-            ).to(self.query.weight.device)
-        )
-
         self.quantize = True
         return self.quantize
     
@@ -1200,7 +1190,7 @@ class MultiHeadAttention_quantized(nn.Module):
         scale = (self.n_state // self.n_head) ** -0.5
         qk_req_alpha = torch.tensor([2.**self.qk_frac_bits],dtype=torch.double,device=self.act_alpha_k.device) * torch.tensor([scale],dtype=torch.double,device=self.act_alpha_k.device) / self.act_alpha_q.double() / self.act_alpha_k.double()
         qk_req_multiplier, qk_req_shiftmount = torch.frexp(qk_req_alpha)
-        self.qk_req_multiplier.data = qk_req_multiplier.mul(2**7).trunc().to(torch.int32).view(self.qk_req_multiplier.shape)
+        self.qk_req_multiplier.data = qk_req_multiplier.mul(2**7).trunc().to(torch.uint8).view(self.qk_req_multiplier.shape)
         self.qk_req_shiftmount.data = (-qk_req_shiftmount + 7).clamp(0,32).to(torch.int8).view(self.qk_req_shiftmount.shape)
         test_array = (-qk_req_shiftmount + 7)
         assert torch.all(test_array >= 0), "qk_req_multiplier must be positive!"
@@ -1208,16 +1198,16 @@ class MultiHeadAttention_quantized(nn.Module):
         
         av_req_alpha =  self.out.act_alpha / self.act_alpha_v
         av_req_multiplier, av_req_shiftmount = torch.frexp(av_req_alpha)
-        self.av_req_multiplier.data = av_req_multiplier.mul(2**7).trunc().to(torch.int8).view(self.av_req_multiplier.shape)
+        self.av_req_multiplier.data = av_req_multiplier.mul(2**7).trunc().to(torch.uint8).view(self.av_req_multiplier.shape)
         self.av_req_shiftmount.data = (-av_req_shiftmount + 7).clamp(0,32).to(torch.int8).view(self.av_req_shiftmount.shape)
         test_array = (-av_req_shiftmount + 7)
         assert torch.all(test_array >= 0), "av_req_multiplier must be positive!"
         self.av_req_alpha = av_req_alpha
 
-        self.query = Linear8.copy_param(self.query)
-        self.key = Linear8.copy_param(self.key)
-        self.value = Linear8.copy_param(self.value)
-        self.out = Linear32.copy_param(self.out)
+        # self.query = Linear8.copy_param(self.query)
+        # self.key = Linear8.copy_param(self.key)
+        # self.value = Linear8.copy_param(self.value)
+        # self.out = Linear32.copy_param(self.out)
 
         self.int_mode = True
         return self.int_mode
@@ -1288,17 +1278,17 @@ class MultiHeadAttention_quantized(nn.Module):
 
         '''Calculate QK^T'''
         if self.quantize:
-            scale = (n_state // self.n_head) ** -0.5
             q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
             k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
             v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 3, 1)
             
             if self.int_mode:
                 qk = Batch_Head_s8s8s32_GeMM(q, k)  # int32 tensor
-                qk = Rshift(qk.mul(self.qk_req_multiplier), self.qk_req_shiftmount)
+                qk = Rshift(qk.mul(self.qk_req_multiplier.int()), self.qk_req_shiftmount)
                 qk = qk.clamp(*INT_MAX["S16"]).to(torch.int16)
 
             else:
+                scale = (n_state // self.n_head) ** -0.5
                 rescale_factor = scale / self.act_alpha_q / self.act_alpha_k * 2.**self.qk_frac_bits
                 q_t = q * self.act_alpha_q
                 q_c = q_t.clamp(min=-self.act_range, max=self.act_range)
@@ -1568,6 +1558,13 @@ class ResidualAttentionBlock_quantized(nn.Module):
         if self.cross_attn:
             self.cross_attn_ln = LayerNorm_int.copy_param(self.cross_attn_ln)
         self.mlp[1] = GELU_int.copy_param(self.mlp[1])
+        self.attn = MultiHeadAttention_int.copy_param(self.attn)
+        if self.cross_attn:
+        #     self.cross_attn.query = Linear8.copy_param(self.cross_attn.query)
+        #     self.cross_attn.key = Linear8.copy_param(self.cross_attn.key)
+        #     self.cross_attn.value = Linear8.copy_param(self.cross_attn.value)
+        #     self.cross_attn.out = Linear32.copy_param(self.cross_attn.out)
+            self.cross_attn = MultiHeadAttention_int.copy_param(self.cross_attn)
         self.int_mode = True
         return self.int_mode
     
@@ -2112,7 +2109,6 @@ class TextDecoder_quantized(nn.Module):
         '''Calculate offset, offset is the length of cached key/value pairs in kv_cache'''
         '''offset is used to index positional embeddings correctly when using kv_cache'''
         offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
-
         
         '''Calculate token embeddings with/without quantization'''
         if self.quantize:
@@ -2312,7 +2308,7 @@ class Whisper_quantized(nn.Module):
             return cache[module]
 
         def install_hooks(layer: nn.Module):
-            if isinstance(layer, MultiHeadAttention_quantized):
+            if isinstance(layer, (MultiHeadAttention_quantized,MultiHeadAttention_int)):
                 hooks.append(layer.key.register_forward_hook(save_to_cache))
                 hooks.append(layer.value.register_forward_hook(save_to_cache))
 

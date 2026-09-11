@@ -19,7 +19,7 @@ from .decoding import detect_language as detect_language_function
 from .transcribe import transcribe as transcribe_function
 from .model_quant import *
 from .kernels import w8a8
-from .modules.linear import Linear_int
+from .modules.linear import Linear8, Linear32
 from .modules.functional import (
     Rshift,
     Fast_Inverse_Square_Root,
@@ -271,99 +271,6 @@ class LayerNorm_int(nn.LayerNorm):
         else:
             raise NotImplementedError("The input layer is not i-whisper quantize LayerNorm")
         return new_layer.to(quant_layer.weight.device)
-
-
-# class Linear_int(nn.Linear):
-#     def __init__(
-#         self,
-#         in_features: int,
-#         out_features: int,
-#         bias: bool = True,
-#         encoder: bool = False,
-#         attn : bool = False,
-#         cross_attn : bool = False,
-#         mlp0: bool = False,
-#         mlp2: bool = False,
-#         asym: bool = True,
-#         Bout: int = 8,
-#         debug: bool = False
-#     ):
-#         '''inherit from nn.Linear'''
-#         super().__init__(in_features, out_features, bias)
-#         '''meta parameters'''
-#         self.encoder = encoder          # if this linear layer is in transformer encoder
-#         self.attn = attn                # if this linear layer is in attention module
-#         self.cross_attn = cross_attn    # if this linear layer is in cross-attention module
-#         self.mlp0 = mlp0                # if this linear layer is in MLP 1st layer
-#         self.mlp2 = mlp2                # if this linear layer is in MLP 2nd layer
-#         self.asym = asym                # if use asymmetric quantization for weights
-#         self.debug = debug              # debug flag
-
-#         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
-#         self.act_bit = 8
-#         self.Bout    = Bout
-
-#         '''Quantization Hyper-parameters (Ranges of Parameters)'''
-#         self.act_range = 127    # Signed, 2**(self.act_bit-1)-1
-
-#         '''Quantization Parameters initialization'''
-#         if self.asym:
-#             self.register_buffer('wgt_zeros', torch.zeros(out_features))
-#         self.req_multiplier = torch.nn.Parameter(torch.ones((out_features), dtype=torch.uint8), requires_grad=False)
-#         self.req_shiftmount = torch.nn.Parameter(torch.zeros((out_features), dtype=torch.int8), requires_grad=False)
-        
-#         '''weight re-initialization for quantization'''
-#         self.weight = nn.Parameter(torch.ones((out_features, in_features), dtype=torch.int8), requires_grad=False)
-#         if self.bias is not None:
-#             self.bias = nn.Parameter(torch.ones((out_features), dtype=torch.int32), requires_grad=False)
-    
-
-#     def extra_repr(self) -> str:
-#         return f'in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}, encoder={self.encoder}, mlp2={self.mlp2}'
-
-
-#     def forward(self, x: Tensor) -> Tensor:
-#         "integer inference (all int computation)"
-#         assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
-#         '''INT8xINT8 --> INT32 MatMul'''
-#         if x.device.type == 'cuda':
-#             out = int8_linear_matmul(x.contiguous(), self.weight.contiguous())
-            
-#         else: # using cpu
-#             if _IS_ARM:
-#                 out = w8a8.s8s8s32_gemm_packed(x.contiguous(), self.weight.contiguous(), self.out_features)
-#             else:
-#                 out = torch.matmul(x.int(), self.weight.int().t())
-        
-#         if self.bias is not None:
-#             '''bias addition'''
-#             out += self.bias
-        
-#         if self.asym:
-#             '''Zero-point correction for asymmetric quantization'''
-#             out -= torch.sum(x.int(),dim=-1,keepdim=True).to(torch.int32) * self.wgt_zeros.to(torch.int32).reshape(1,1,-1)
-
-#         '''Re-Quantization'''
-#         out = Rshift(out.mul(self.req_multiplier.int()), self.req_shiftmount)
-        
-#         if self.Bout <= 8: # re-quant to int8
-#             out = out.clamp(min=-(2**(self.Bout-1)), max=(2**(self.Bout-1)-1)).to(torch.int8)
-#         elif self.Bout <=16: # De-quant
-#             out = out.clamp(min=-(2**(self.Bout-1)), max=(2**(self.Bout-1)-1)).to(torch.int16)
-#         elif self.Bout <=32: # De-quant
-#             pass
-#         else:
-#             raise NotImplementedError("re-quant to more than INT64 is un-support!")
-        
-#         return out
-    
-    
-#     def pack_weight(self):
-#         """Pack weight matrix for faster int8 GEMM
-#         """
-#         if _IS_ARM:
-#             self.weight = nn.Parameter(w8a8.pack_B_to_Bp(self.weight), requires_grad=False)
-
         
 
 class Conv1d_int(nn.Conv1d):
@@ -467,21 +374,12 @@ class MultiHeadAttention_int(nn.Module):
         self,
         n_state: int,
         n_head: int,
-        encoder: bool = False,
-        cross_attn : bool = False,
-        debug: bool = False,
     ):
         '''inherit from nn.Module'''
         super().__init__()
         '''meta parameters'''
         self.n_state = n_state
         self.n_head = n_head
-        self.encoder = encoder
-        self.cross_attention = cross_attn
-        self.debug = debug
-
-        '''Quantization Hyper-parameters (Bit-width of Parameters)'''
-        self.act_bit = 8
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_range = 127    # Signed, 2**(self.act_bit-1)-1
@@ -489,22 +387,19 @@ class MultiHeadAttention_int(nn.Module):
         '''Quantization Parameters initialization'''
         self.qk_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8), requires_grad=False)
         self.qk_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
-        self.qk_offset = 7
-        self.rsqrt_offset = 10
+        self.av_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint8), requires_grad=False)
+        self.av_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8), requires_grad=False)
+        self.register_buffer(
+            "qk_frac_bits",
+            torch.tensor(7, dtype=torch.int32)
+        )
+        self.rsqrt_offset = 16
 
         '''sub-modules initialization'''
-        self.query = Linear_int(
-            n_state, n_state, # Layer config
-            encoder=encoder, attn = True)
-        self.key = Linear_int(
-            n_state, n_state, bias=False, # Layer config
-            encoder=encoder, cross_attn = cross_attn, attn = True)
-        self.value = Linear_int(
-            n_state, n_state, # Layer config
-            encoder=encoder, cross_attn = cross_attn, attn = True)
-        self.out = Linear_int(
-            n_state, n_state, # Layer config
-            encoder=encoder, attn = True, Bout=32)
+        self.query = Linear8(n_state, n_state)
+        self.key = Linear8(n_state, n_state, bias=False)
+        self.value = Linear8(n_state, n_state)
+        self.out = Linear32(n_state, n_state)
     
 
     def forward(
@@ -534,6 +429,9 @@ class MultiHeadAttention_int(nn.Module):
         if mask is None:
             mask = torch.zeros_like(x, dtype=torch.bool)
         else:
+            if mask.dtype != torch.bool:
+                mask = (mask==float('-inf'))
+            
             mask = mask.unsqueeze(0).unsqueeze(0)
             mask = mask.repeat(
                 x.shape[0]//mask.shape[0],
@@ -541,8 +439,11 @@ class MultiHeadAttention_int(nn.Module):
                 x.shape[2]//mask.shape[2],
                 x.shape[3]//mask.shape[3])
 
-        offset = int(self.qk_offset)
-        x[mask] = torch.iinfo(torch.int16).min
+        offset = self.qk_frac_bits
+        if x.dtype == torch.int16:
+            x[mask] = torch.iinfo(torch.int16).min
+        elif x.dtype == torch.int32:
+            x[mask] = torch.iinfo(torch.int32).min
         x_max = x.max(dim=-1, keepdim=True).values + 1
         x_sub = x - x_max
         x_mul_fix = x_sub + (x_sub >> 1) - (x_sub >> 4)  # qk_sub_fix * b1.0111
@@ -550,6 +451,9 @@ class MultiHeadAttention_int(nn.Module):
         x_mul_frac = x_mul_fix - (x_mul_int << offset)
         x_exp = ((1 << offset) + (x_mul_frac >> 1)) >> (-x_mul_int)
         x_exp[mask] = 0
+        x_exp[x_sub>0] = 0
+        if self.qk_frac_bits > 7:
+            x_exp = x_exp.int() >> (self.qk_frac_bits - 7)
         return x_exp.to(torch.uint8)
 
 
@@ -567,23 +471,41 @@ class MultiHeadAttention_int(nn.Module):
         v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 3, 1)
 
         qk = Batch_Head_s8s8s32_GeMM(q, k)  # int32 tensor
-        
         qk = Rshift(qk.mul(self.qk_req_multiplier.int()), self.qk_req_shiftmount)
-        qk = qk.clamp(min=-32767, max=32767).to(torch.int16)
+        qk = qk.clamp(-32768,32767).to(torch.int16)
 
         '''Calculate softmax(QK^T) * V'''
         if mask is not None:
-            w = self.shift_exp(qk, mask[:n_ctx, :n_ctx])
+            qk_exp = self.shift_exp(qk, mask[:n_ctx, :n_ctx])
         else:
-            w = self.shift_exp(qk, mask)
+            qk_exp = self.shift_exp(qk, mask)
 
-        out = Batch_Head_u8s8s32_GeMM(w, v)  # int32 tensor
-        sum_inv_mul = Fast_Inverse_Square_Root(w.sum(dim=-1, keepdim=True), self.rsqrt_offset, Newton_iter=2)
-        out = Rshift(out * sum_inv_mul, self.rsqrt_offset)
-        out = Rshift(out * sum_inv_mul, self.rsqrt_offset)
+        out = Batch_Head_u8s8s32_GeMM(qk_exp, v)  # int32 tensor
+        sum_inv_mul = Fast_Inverse_Square_Root(qk_exp.sum(dim=-1, keepdim=True).int(), self.rsqrt_offset, Newton_iter=2)
+        out = Rshift(out.mul(sum_inv_mul).int(), self.rsqrt_offset)
+        out = Rshift(out.mul(sum_inv_mul).int(), self.rsqrt_offset)
+        out = Rshift(out.mul(self.av_req_multiplier.int()).int(), self.av_req_shiftmount)
         out = out.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
 
         return out.permute(0, 2, 1, 3).flatten(start_dim=2)
+    
+    @staticmethod
+    def copy_param(quant_layer):
+        new_layer = MultiHeadAttention_int(
+            n_state=quant_layer.n_state,
+            n_head=quant_layer.n_head
+        )
+        new_layer.qk_req_multiplier.data.copy_(quant_layer.qk_req_multiplier.data)
+        new_layer.qk_req_shiftmount.data.copy_(quant_layer.qk_req_shiftmount.data)
+        new_layer.av_req_multiplier.data.copy_(quant_layer.av_req_multiplier.data)
+        new_layer.av_req_shiftmount.data.copy_(quant_layer.av_req_shiftmount.data)
+        new_layer.qk_frac_bits.data.copy_(quant_layer.qk_frac_bits.data)
+        new_layer.query = Linear8.copy_param(quant_layer.query)
+        new_layer.key = Linear8.copy_param(quant_layer.key)
+        new_layer.value = Linear8.copy_param(quant_layer.value)
+        new_layer.out = Linear32.copy_param(quant_layer.out)
+
+        return new_layer.to(quant_layer.qk_req_multiplier.device)
 
 
 
@@ -866,7 +788,6 @@ class TextDecoder_int(nn.Module):
 
 QUANT_MODULES = [
     Conv1d_int,
-    Linear_int,
     GELU_int,
     LayerNorm_int,
     AudioEncoder_int,
