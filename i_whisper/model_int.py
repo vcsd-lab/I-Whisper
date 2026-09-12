@@ -18,7 +18,6 @@ from .decoding import decode as decode_function
 from .decoding import detect_language as detect_language_function
 from .transcribe import transcribe as transcribe_function
 from .model_quant import *
-from .kernels import w8a8
 from .modules.linear import Linear8, Linear32
 from .modules.functional import (
     Rshift,

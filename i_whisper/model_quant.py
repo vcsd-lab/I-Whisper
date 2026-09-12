@@ -20,7 +20,6 @@ from bitsandbytes.functional import int8_linear_matmul
 from .decoding import decode as decode_function
 from .decoding import detect_language as detect_language_function
 from .transcribe import transcribe as transcribe_function
-from .kernels import w8a8
 from .modules.functional import (
     Rshift,
     Fast_Inverse_Square_Root,
@@ -792,10 +791,7 @@ class Linear_quantized(nn.Linear):
                 out = int8_linear_matmul(x.contiguous(), self.weight)
 
             else: # using cpu
-                if _IS_ARM:
-                    out = w8a8.s8s8s32_gemm(x.contiguous(), self.weight)
-                else:
-                    out = torch.matmul(x.int(), self.weight.int().t())
+                out = torch.matmul(x.int(), self.weight.int().t())
             
             if self.bias is not None:
                 '''bias addition'''
@@ -1046,10 +1042,7 @@ class Conv1d_quantized(nn.Conv1d):
                 if x.device.type == 'cuda':
                     out = int8_linear_matmul(out.contiguous(), self.weight)
                 else: # using cpu
-                    if _IS_ARM:
-                        out = w8a8.s8s8s32_gemm(out.contiguous(), self.weight)
-                    else:
-                        out = torch.matmul(out.int(), self.weight.int().t())
+                    out = torch.matmul(out.int(), self.weight.int().t())
                 
                 if self.bias is not None:
                     out += self.bias
@@ -2155,10 +2148,7 @@ class TextDecoder_quantized(nn.Module):
                 if x.device.type == 'cuda':
                     logits = int8_linear_matmul(x, self.token_embedding.weight)
                 else:
-                    if _IS_ARM:
-                        logits = w8a8.s8s8s32_gemm(x, self.token_embedding.weight)
-                    else:
-                        logits = torch.matmul(x.int(), self.token_embedding.weight.int().t())
+                    logits = torch.matmul(x.int(), self.token_embedding.weight.int().t())
 
                 # requant logits
                 logits = (logits.long().mul(self.clf_req_multiplier.long()) >> 32).int()
@@ -2176,10 +2166,7 @@ class TextDecoder_quantized(nn.Module):
                 if x.device.type == 'cuda':
                     logits = int8_linear_matmul(act_cf_q, self.token_embedding.weight).float()
                 else:
-                    if _IS_ARM:
-                        logits = w8a8.s8s8s32_gemm(act_cf_q, self.token_embedding.weight).float()
-                    else:
-                        logits = torch.matmul(act_cf_q.int(), self.token_embedding.weight.int().t()).float()
+                    logits = torch.matmul(act_cf_q.int(), self.token_embedding.weight.int().t()).float()
                 
                 logits = logits.div(self.act_cf_alpha).div(self.wgt_alpha)
                 logits = logits.mul(self.act_logits_alpha.type(logits.dtype)).round().div(self.act_logits_alpha.type(logits.dtype))
