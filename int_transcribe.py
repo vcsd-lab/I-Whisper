@@ -189,7 +189,7 @@ options = i_whisper.DecodingOptions(fp16=False, language="en")
 
 if args.test:
     '''Load audio dataset & ground truth'''
-    ds_name = "LibriSpeech/test_other"
+    ds_name = "LibriSpeech.test-other/test_other"
     ds = load_dataset(ds_name)
 
     TEXT_GT = []
@@ -200,17 +200,7 @@ if args.test:
     if not os.path.exists(RESULT_HOME):
         os.makedirs(RESULT_HOME)
 
-    '''quantized model test log file'''
-    RESULT_QUANT = os.path.join(RESULT_HOME, 'int_'+args.model+'.report')
-    f = open(RESULT_QUANT, 'w') # clear previous contents
-    f.close()
-    f = open(RESULT_QUANT, 'a')
-    print("="*50+" R E P O R T "+"="*50, file=f)
-    print('Setups:', file=f)
-    print('> Online-Quant Model (FP Scale)', file=f)
-    print('> INT-FFT', file=f)
-    print('> INT-MEL', file=f)
-    print('> INT LOG', file=f)
+    
 
     audio_lengths = []
     t1 = time.time()
@@ -218,17 +208,21 @@ if args.test:
     for i in test_loop:
         test_loop.set_description_str(f"Transcribe and Test with {ds_name}, Sample {i}")
         audio = ds['train'][i]["audio"]["array"]
-        audio = (np.float32(audio) * 2**15).astype(np.int16)  # to INT16 range
+        # audio = (np.float32(audio) * 2**15).astype(np.int16)  # to INT16 range
 
         audio_lengths.append(audio.shape[0]/16000)
         audio = i_whisper.pad_or_trim(audio)
-        mel = PreProcessor.log_mel_spectrum(audio).to(model.device)
+        mel = i_whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
 
         # Reading Ground Truth
-        GT_PATH = ds['train'][i]["audio"]["path"]
-        GT_FILE = open(GT_PATH.split('-')[0] + '-' + GT_PATH.split('-')[1] +'.trans.txt', 'r')
-        GT_READ = GT_FILE.readlines()[int( GT_PATH.split('-')[-1].split('.')[0] )].split(' ', 1)[1].strip('\n')
-        logger.info(f"AUDIO data path: {GT_PATH}")
+        AUDIO_PATH = ds['train'][i]["audio"]["path"]
+        GT_PATH = '-'.join(AUDIO_PATH.split('-')[:-1]) + '.trans.txt'
+        GT_FILE = open(GT_PATH, 'r')
+        GT_READ = GT_FILE.readlines()[int( AUDIO_PATH.split('-')[-1].split('.')[0] )].split(' ', 1)[1].strip('\n')
+        # GT_PATH = ds['train'][i]["audio"]["path"]
+        # GT_FILE = open(GT_PATH.split('-')[0] + '-' + GT_PATH.split('-')[1] +'.trans.txt', 'r')
+        # GT_READ = GT_FILE.readlines()[int( GT_PATH.split('-')[-1].split('.')[0] )].split(' ', 1)[1].strip('\n')
+        logger.info(f"AUDIO data path: {AUDIO_PATH}")
         # add GT to TEXT_GT list
         TEXT_GT.append(GT_READ)
         GT_FILE.close()
@@ -242,6 +236,19 @@ if args.test:
         TEXT.append(result.text)
 
     t2 = time.time()
+
+
+    '''Logging and Reporting Integer Model Test Results'''
+    RESULT_QUANT = os.path.join(RESULT_HOME, 'int_'+args.model+'.report')
+    f = open(RESULT_QUANT, 'w') # clear previous contents
+    f.close()
+    f = open(RESULT_QUANT, 'a')
+    print("="*50+" R E P O R T "+"="*50, file=f)
+    print('Setups:', file=f)
+    print('> Online-Quant Model (FP Scale)', file=f)
+    print('> INT-FFT', file=f)
+    print('> INT-MEL', file=f)
+    print('> INT LOG', file=f)
     Align_and_Report(TEXT_GT, TEXT, audio_lengths, f)
     print(f"Total inference time for {len(TEXT)} samples: {t2-t1:.2f} seconds", file=f)
     f.close()
