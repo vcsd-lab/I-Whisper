@@ -39,7 +39,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 __all__ = [
     "GELU_int",
     "LayerNorm_int",
-    "Linear_int",
     "Conv1d_int",
     "MultiHeadAttention_int",
     "ResidualAttentionBlock_int",
@@ -677,7 +676,7 @@ class AudioEncoder_int(nn.Module):
         """
         if x.dtype != torch.int8:
             # quantize input mel spectrogram to int8
-            x = (x * self.input_alpha).round().clamp(min=-128, max=127).to(torch.int8)
+            x = (x * self.input_alpha).round().clamp(min=-127, max=127).to(torch.int8)
 
         x = self.conv1(x)
         x = self.gelu1(x)
@@ -854,13 +853,12 @@ QUANT_MODULES = [
 
 
 class Whisper_int(nn.Module):
-    def __init__(self, dims: ModelDimensions, debug: bool = False):
+    def __init__(self, dims: ModelDimensions):
         '''inherit from nn.Module'''
         super().__init__()
 
         '''meta parameters'''
         self.dims = dims
-        self.debug = debug
 
         '''sub-modules initialization'''
         self.encoder = AudioEncoder_int(
@@ -869,7 +867,6 @@ class Whisper_int(nn.Module):
             self.dims.n_audio_state,
             self.dims.n_audio_head,
             self.dims.n_audio_layer,
-            self.debug
         )
         self.decoder = TextDecoder_int(
             self.dims.n_vocab,
@@ -877,7 +874,6 @@ class Whisper_int(nn.Module):
             self.dims.n_text_state,
             self.dims.n_text_head,
             self.dims.n_text_layer,
-            self.debug
         )
         # use the last half among the decoder layers for time alignment by default;
         # to use a specific set of heads, see `set_alignment_heads()` below.
@@ -907,15 +903,6 @@ class Whisper_int(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         return self.decoder(tokens, self.encoder(mel))
     
-    def pack_linear_weights(self):
-        """Pack all Linear_int weights for faster int8 GEMM
-        """
-        def pack_if_linear_int(module: nn.Module):
-            if isinstance(module, Linear_int):
-                module.pack_weight()
-
-        self.apply(pack_if_linear_int)
-
     @property
     def device(self):
         return next(self.parameters()).device

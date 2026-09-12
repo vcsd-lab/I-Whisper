@@ -1,3 +1,5 @@
+import gc
+
 import torch
 import i_whisper
 from datasets import load_dataset
@@ -17,7 +19,7 @@ import argparse
 import random
 import jiwer
 from i_whisper.model_quant import ResidualAttentionBlock_quantized, LayerNorm_quantized, Linear_quantized, GELU_quantized
-from i_whisper.model_int import Build_from_Quant
+from i_whisper.model_int import Whisper_int
 
 
 import traceback
@@ -633,6 +635,15 @@ if args.test:
     #     torch.save(checkpoint, PATH)
     # model = model_i
     model.convert_to_int_mode()
+    model_new = Whisper_int(model.dims).to(model.device)
+    result = model_new.load_state_dict(model.state_dict(), strict=False)
+    print("Integer Only Model Loaded from Quantized Model")
+    print("Missing keys not in Quantized Model: ", len(result.missing_keys), ", showing up to 10: ", result.missing_keys[:10])
+    print("Unexpected keys in Quantized Model but not in Model: ", len(result.unexpected_keys), ", showing up to 10: ", result.unexpected_keys[:10])
+    model = model_new
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     audit = IntegerOnlyAudit()
 
     
@@ -702,6 +713,7 @@ if args.test:
 
     Align_and_Report(TEXT_GT, TEXT, audio_lengths, f)
     f.close()
+    print(model)
     
     
 else:

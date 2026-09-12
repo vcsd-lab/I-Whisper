@@ -555,10 +555,10 @@ class Linear_quantized(nn.Linear):
         self.register_buffer('act_alpha', torch.tensor(1.0))
         if self.asym:
             self.register_buffer('wgt_alpha', torch.ones(out_features,1))
-            self.register_buffer('wgt_zeros', torch.zeros(out_features, dtype=torch.int8))
+            self.register_buffer('wgt_zeros', torch.zeros((out_features), dtype=torch.int8))
         else:
             self.register_buffer('wgt_alpha', torch.ones(out_features,1))
-        self.req_multiplier = torch.nn.Parameter(torch.ones((out_features), dtype=torch.int32), requires_grad=False)
+        self.req_multiplier = torch.nn.Parameter(torch.ones((out_features), dtype=torch.uint32), requires_grad=False)
         self.req_shiftmount = torch.nn.Parameter(torch.zeros((out_features), dtype=torch.int8), requires_grad=False)
         
         '''weight re-initialization for quantization'''
@@ -2344,8 +2344,8 @@ class Whisper_quantized(nn.Module):
         success = []
         success.append(self.encoder.convert_to_int_mode(self.decoder.blocks[0].cross_attn.key.act_alpha))
         success.append(self.decoder.convert_to_int_mode())
-        self.encoder = AudioEncoder_int.copy_param(self.encoder)
-        self.decoder = TextDecoder_int.copy_param(self.decoder)
+        # self.encoder = AudioEncoder_int.copy_param(self.encoder)
+        # self.decoder = TextDecoder_int.copy_param(self.decoder)
         return all(success)
         
 
