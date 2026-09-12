@@ -1,10 +1,11 @@
 import hashlib
 import io
 import os
+from os import path
 import urllib
 import warnings
 import ctypes, gc
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 
 import torch
 from tqdm import tqdm
@@ -239,46 +240,254 @@ def load_model_quantized(
     return model.to(device)
 
 
+
+import json
+from dataclasses import asdict
+from pathlib import Path
+from safetensors.torch import load_file, save_file
+_INT_CKPT_ROOT = Path("CKPT")
+_INT_FORMAT = "i-whisper-int"
+_INT_FORMAT_VERSION = 1
+
+
+
+def _resolve_int_model_dir(name: str) -> Path:
+    path = Path(name)
+
+    # Explicit model directory
+    if path.is_dir():
+        return path
+
+    # Explicit path to model.safetensors
+    if path.is_file():
+        if path.name != "model.safetensors":
+            raise RuntimeError(
+                f"Expected model.safetensors, got: {path}"
+            )
+        return path.parent
+
+    # Model alias: "base" -> CKPT/iwhisper-base
+    model_dir = _INT_CKPT_ROOT / f"iwhisper-{name}"
+
+    if model_dir.is_dir():
+        return model_dir
+
+    raise RuntimeError(
+        f"I-Whisper INT model '{name}' not found. "
+        f"Expected directory: {model_dir}"
+    )
+
+
+def save_int_model(
+    model: Whisper_int,
+    prefix: str,
+    model_name: str,
+) -> None:
+    """
+    Save an I-Whisper integer-only model.
+
+    The model is stored as:
+        <prefix>/iwhisper-<model_name>/
+            config.json
+            model.safetensors
+
+    Parameters
+    ----------
+    model : Whisper_int
+        Integer-only Whisper model.
+    prefix : str
+        Root directory for model artifacts.
+    model_name : str
+        Model variant, e.g. "tiny", "base", "small".
+    """
+    if not isinstance(model, Whisper_int):
+        raise TypeError("model must be an instance of Whisper_int")
+
+    model_dir = Path(prefix) / f"iwhisper-{model_name}"
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    config = {
+        "format": _INT_FORMAT,
+        "format_version": _INT_FORMAT_VERSION,
+        "model_name": model_name,
+        "dims": asdict(model.dims),
+    }
+
+    # Safetensors requires dense contiguous tensors.
+    # Always serialize the canonical model state on CPU.
+    state_dict = {
+        name: tensor.detach().cpu().contiguous()
+        for name, tensor in model.state_dict().items()
+    }
+
+    save_file(
+        state_dict,
+        str(model_dir / "model.safetensors"),
+        metadata={
+            "format": _INT_FORMAT,
+            "format_version": str(_INT_FORMAT_VERSION),
+        },
+    )
+
+    with open(model_dir / "config.json", "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+    print(f"Integer-only model saved successfully at {model_dir}")
+
+
+
 def load_int_model(
     name: str,
     device: Optional[Union[str, torch.device]] = None,
 ) -> Whisper_int:
     """
-    Load a quantized Whisper INT ASR model
+    Load an I-Whisper integer-only model.
 
     Parameters
     ----------
     name : str
-        path to a model checkpoint containing the model dimensions and the model state_dict.
-    device : Union[str, torch.device]
-        the PyTorch device to put the model into
+        Either:
+        - a model name, e.g. "base"
+        - a model directory, e.g. "CKPT/iwhisper-base"
+        - a path to model.safetensors
+    device : Union[str, torch.device], optional
+        Target device.
 
     Returns
     -------
     model : Whisper_int
-        The Whisper INT ASR model instance
+        Loaded integer-only Whisper model.
     """
-
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if name in _MODELS:
-        checkpoint_path = "CKPT/consolidated.int."+name+".pth"
-    else:
-        checkpoint_path = name
-    
-    if not os.path.isfile(checkpoint_path):
+    model_dir = _resolve_int_model_dir(name)
+
+    config_path = model_dir / "config.json"
+    tensor_path = model_dir / "model.safetensors"
+
+    if not config_path.is_file():
         raise RuntimeError(
-            f"Model {name} not found; please provide a valid path to the INT model checkpoint."
+            f"Missing model configuration: {config_path}"
         )
-    else:
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
-    dims = checkpoint["dims"]
+    if not tensor_path.is_file():
+        raise RuntimeError(
+            f"Missing model tensors: {tensor_path}"
+        )
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    if config.get("format") != _INT_FORMAT:
+        raise RuntimeError(
+            f"Unsupported model format: {config.get('format')}"
+        )
+
+    if config.get("format_version") != _INT_FORMAT_VERSION:
+        raise RuntimeError(
+            f"Unsupported model format version: "
+            f"{config.get('format_version')}"
+        )
+
+    dims = ModelDimensions(**config["dims"])
+
+    # Construct the canonical model first.
     model = Whisper_int(dims)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    del checkpoint
-    gc.collect()
-    ctypes.CDLL("libc.so.6").malloc_trim(0)
 
-    return model.to(device)
+    # Safetensors preserves the original integer dtypes.
+    state_dict = load_file(
+        str(tensor_path),
+        device="cpu",
+    )
+
+    # strict=True is important:
+    # the serialized artifact must exactly match Whisper_int.
+    model.load_state_dict(
+        state_dict,
+        strict=True,
+    )
+
+    del state_dict
+    gc.collect()
+
+    model = model.to(device)
+    model.eval()
+
+    return model
+
+
+def _tensor_exact_equal(a: torch.Tensor, b: torch.Tensor) -> bool:
+    """
+    Bit/value-exact tensor comparison while handling PyTorch unsigned
+    integer dtypes whose torch.equal kernels may not be implemented.
+    """
+    if a.dtype in (torch.uint16, torch.uint32):
+        return torch.equal(
+            a.to(torch.int64),
+            b.to(torch.int64),
+        )
+
+    return torch.equal(a, b)
+
+
+def verify_int_model_roundtrip(
+    original: Whisper_int,
+    loaded: Whisper_int,
+    streamer: Optional[Callable[[str], None]] = None,
+) -> None:
+    """
+    Verify that two Whisper INT models have identical persistent states
+    after save/load round-trip.
+
+    Parameters
+    ----------
+    original : Whisper_int
+        Original model before serialization.
+    loaded : Whisper_int
+        Model reconstructed from the serialized checkpoint.
+    streamer : Callable[[str], None], optional
+        Output function for verification messages.
+        Defaults to print.
+    """
+    if streamer is None:
+        streamer = print
+
+    original_state = original.state_dict()
+    loaded_state = loaded.state_dict()
+
+    if original_state.keys() != loaded_state.keys():
+        missing = original_state.keys() - loaded_state.keys()
+        unexpected = loaded_state.keys() - original_state.keys()
+
+        if missing:
+            streamer(f"Missing keys: {sorted(missing)}")
+
+        if unexpected:
+            streamer(f"Unexpected keys: {sorted(unexpected)}")
+
+        raise AssertionError("State dict keys mismatch")
+
+    for name in original_state:
+        a = original_state[name].detach().cpu()
+        b = loaded_state[name].detach().cpu()
+
+        if a.dtype != b.dtype:
+            raise AssertionError(
+                f"{name}: dtype mismatch: {a.dtype} != {b.dtype}"
+            )
+
+        if a.shape != b.shape:
+            raise AssertionError(
+                f"{name}: shape mismatch: {a.shape} != {b.shape}"
+            )
+
+        if not _tensor_exact_equal(a, b):
+            raise AssertionError(
+                f"{name}: tensor value mismatch"
+            )
+
+    streamer(
+        f"Integer model round-trip verification passed "
+        f"({len(original_state)} tensors checked)"
+    )

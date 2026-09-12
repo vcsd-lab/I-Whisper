@@ -28,85 +28,6 @@ from torch.utils._pytree import tree_flatten
 
 
 
-# class IntegerOnlyAudit(TorchDispatchMode):
-#     def __init__(self):
-#         super().__init__()
-#         self.ops = []
-
-#     @staticmethod
-#     def _get_user_stack():
-#         stack = traceback.extract_stack()
-
-#         useful = []
-
-#         for frame in stack:
-#             filename = frame.filename
-
-#             # Filter out PyTorch / audit internals
-#             if (
-#                 "site-packages/torch/" in filename
-#                 or "_python_dispatch.py" in filename
-#             ):
-#                 continue
-
-#             useful.append(frame)
-
-#         return "".join(traceback.format_list(useful[-10:]))
-
-#     def _check_tree(self, obj, where):
-#         flat, _ = tree_flatten(obj)
-
-#         for x in flat:
-#             if isinstance(x, torch.Tensor):
-#                 if x.is_floating_point() or x.is_complex():
-
-#                     stack = self._get_user_stack()
-
-#                     raise RuntimeError(
-#                         "\n"
-#                         "==================================================\n"
-#                         "[FLOAT DETECTED]\n"
-#                         f"Location : {where}\n"
-#                         f"dtype    : {x.dtype}\n"
-#                         f"shape    : {tuple(x.shape)}\n"
-#                         "\n"
-#                         "Python call stack:\n"
-#                         f"{stack}"
-#                         "=================================================="
-#                     )
-
-#     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-#         kwargs = kwargs or {}
-
-#         self._check_tree(
-#             (args, kwargs),
-#             f"{func} input"
-#         )
-
-#         flat, _ = tree_flatten((args, kwargs))
-
-#         for x in flat:
-#             if isinstance(x, float):
-#                 stack = self._get_user_stack()
-
-#                 raise RuntimeError(
-#                     f"\n[PYTHON FLOAT DETECTED]\n"
-#                     f"Operator: {func}\n"
-#                     f"Value: {x}\n"
-#                     f"{stack}"
-#                 )
-
-#         self.ops.append(str(func))
-
-#         out = func(*args, **kwargs)
-
-#         self._check_tree(
-#             out,
-#             f"{func} output"
-#         )
-
-#         return out
-
 class IntegerOnlyAudit(TorchDispatchMode):
     def __init__(self):
         super().__init__()
@@ -492,12 +413,12 @@ if (args.smooth or args.calibrate):
         logger.info(f"Quantize Model START")
         model.quantize_model(logger)
         logger.info(f"Quantize Model DONE")
-        if args.save_model:
-            CKPT_PATH = os.path.join('CKPT', 'consolidated.quant.'+args.model+'.pth')
-            logger.info(f"args.save_model: {args.save_model}, Saving Quantized Model to {CKPT_PATH}")
-            if not os.path.exists('CKPT'):
-                os.makedirs('CKPT')
-            torch.save(model.state_dict(), CKPT_PATH)
+        # if args.save_model:
+        #     CKPT_PATH = os.path.join('CKPT', 'consolidated.quant.'+args.model+'.pth')
+        #     logger.info(f"args.save_model: {args.save_model}, Saving Quantized Model to {CKPT_PATH}")
+        #     if not os.path.exists('CKPT'):
+        #         os.makedirs('CKPT')
+        #     torch.save(model.state_dict(), CKPT_PATH)
 
     if model.check_quantized(logger):
         logger.info("MODEL FULL QUANT CHECK: PASS")
@@ -622,51 +543,37 @@ if args.test:
         f_o.close()
     
     """TEST INTEGER ONLY INFERENCE VERSION"""
-    # model_i = Build_from_Quant(model).to(model.device)
-    # SAVE integer only model
-    # if args.save_model:
-    #     CKPT_PATH = 'consolidated.int.'+args.model+'.pth'
-    #     PATH = os.path.join('CKPT', CKPT_PATH)
-    #     if not os.path.exists('CKPT'):
-    #         os.makedirs('CKPT')
-    #     checkpoint = {}
-    #     checkpoint['model_state_dict'] = model_i.state_dict()
-    #     checkpoint["dims"] = model_i.dims
-    #     torch.save(checkpoint, PATH)
-    # model = model_i
     model.convert_to_int_mode()
     model_new = Whisper_int(model.dims).to(model.device)
     result = model_new.load_state_dict(model.state_dict(), strict=False)
-    print("Integer Only Model Loaded from Quantized Model")
-    print("Missing keys not in Quantized Model: ", len(result.missing_keys), ", showing up to 10: ", result.missing_keys[:10])
-    print("Unexpected keys in Quantized Model but not in Model: ", len(result.unexpected_keys), ", showing up to 10: ", result.unexpected_keys[:10])
+    logger.info("Integer Only Model Loaded from Quantized Model")
+    logger.info(f"Missing keys not in Quantized Model: {len(result.missing_keys)}, showing up to 10: {result.missing_keys[:10]}")
+    logger.info(f"Unexpected keys in Quantized Model but not in Model: {len(result.unexpected_keys)}, showing up to 10: {result.unexpected_keys[:10]}")
     model = model_new
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    audit = IntegerOnlyAudit()
 
+        
+    '''Integer Only Inference Checker'''
+    audit = IntegerOnlyAudit()
+    audio = ds['train'][0]["audio"]["array"]
+    audio = torch.from_numpy(i_whisper.pad_or_trim(audio))  # INT16 range
+    mel = i_whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
+    mel_test = mel.mul(model.encoder.input_alpha).round().clamp(-127, 127).to(torch.int8).unsqueeze(0)
+    tokens: Tensor = torch.tensor([50258, 50259, 50359]).repeat(1, 1)
+    with audit:
+        feature = model.encoder(mel_test)
+        # set decoder to no dequantize mode
+        model.decoder.dequant_need = False
+        logits = model.decoder(tokens.to(feature.device), feature)
+        model.decoder.dequant_need = True
+        logger.info(f"MODEL INT INFERENCE CHECK: PASS")
     
+    
+
     TEXT_GT = []
     TEXT = []
-    
-    '''Test results collection directory'''
-    RESULT_HOME = os.path.join('MODEL_TEST_REPOERT')
-    if not os.path.exists(RESULT_HOME):
-        os.makedirs(RESULT_HOME)
-
-    '''quantized model test log file'''
-    RESULT_INT = os.path.join(RESULT_HOME, 'int_'+args.model+'.report')
-    f = open(RESULT_INT, 'w') # clear previous contents
-    f.close()
-    f = open(RESULT_INT, 'a')
-    print("="*50+" R E P O R T "+"="*50, file=f)
-    print('Setups:', file=f)
-    print('> Static Integer Only Model', file=f)
-    print('> INT-FFT', file=f)
-    print('> INT-MEL', file=f)
-    print('> INT LOG', file=f)
-
     audio_lengths = []
     test_loop = tqdm( range(len(ds['train']) if args.sample is None else args.sample) )
     for i in test_loop:
@@ -688,32 +595,57 @@ if args.test:
         GT_FILE.close()
         test_loop.set_description_str(f"Test Sample {i}:{GT_PATH}")
 
-        # compile checker: check if integer-only inference compile success
-        if i == 0:
-            mel_test = mel.mul(model.encoder.input_alpha).round().clamp(-127, 127).to(torch.int8).unsqueeze(0)
-            tokens: Tensor = torch.tensor([50258, 50259, 50359]).repeat(1, 1)
-            with audit:
-                feature = model.encoder(mel_test)
-                # set decoder to no dequantize mode
-                model.decoder.dequant_need = False
-                logits = model.decoder(tokens.to(feature.device), feature)
-                model.decoder.dequant_need = True
-                logger.info(f"MODEL INT INFERENCE CHECK: PASS")
-                
-        
-
         # quantized model transcription
         result = i_whisper.decode(model, mel, options)
         # add result to TEXT list
         TEXT.append(result.text)
         
         
-        
+    
+    '''Test results collection directory'''
+    RESULT_HOME = os.path.join('MODEL_TEST_REPOERT')
+    if not os.path.exists(RESULT_HOME):
+        os.makedirs(RESULT_HOME)
 
-
+    '''quantized model test log file'''
+    RESULT_INT = os.path.join(RESULT_HOME, 'int_'+args.model+'.report')
+    f = open(RESULT_INT, 'w') # clear previous contents
+    f.close()
+    f = open(RESULT_INT, 'a')
+    print("="*50+" R E P O R T "+"="*50, file=f)
+    print('Setups:', file=f)
+    print('> Static Integer Only Model', file=f)
+    print('> INT-FFT', file=f)
+    print('> INT-MEL', file=f)
+    print('> INT LOG', file=f)
     Align_and_Report(TEXT_GT, TEXT, audio_lengths, f)
     f.close()
-    print(model)
+    logger.info("Integer Only Model Inference Test Done, please check the report in MODEL_TEST_REPOERT folder")
+    
+    if args.save_model:
+        logger.info("Saving Integer Only Model to CKPT folder")
+
+        i_whisper.save_int_model(
+            model,
+            prefix="CKPT",
+            model_name="base",
+        )
+
+        loaded_model = i_whisper.load_int_model(
+            "base",
+            device="cpu",
+        )
+
+        # 1. Check serialized persistent state
+        i_whisper.verify_int_model_roundtrip(
+            model,
+            loaded_model,
+            logger.info
+        )
+
+        logger.info(
+            "Integer Only Model save/load round-trip verification passed"
+        )
     
     
 else:
