@@ -635,7 +635,6 @@ class AudioEncoder_int(nn.Module):
         n_state: int,
         n_head: int,
         n_layer: int,
-        debug: bool = False
     ):
         '''inherit from nn.Module'''
         super().__init__()
@@ -646,27 +645,27 @@ class AudioEncoder_int(nn.Module):
         self.n_state = n_state
         self.n_head = n_head
         self.n_layer = n_layer
-        self.debug = debug
 
         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
         self.act_pe_bit = 8
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_pe_range = 127    # Signed, 2**(self.act_pe_bit-1)-1
+        self.act_range = 16383     # Signed, 2**(self.act_bit-1)-1
 
         '''Quantization Parameters initialization'''
-        self.req_multiplier = nn.Parameter(torch.ones((n_state), dtype=torch.uint8), requires_grad=False)
+        self.req_multiplier = nn.Parameter(torch.ones((n_state), dtype=torch.uint16), requires_grad=False)
         self.req_shiftmount = nn.Parameter(torch.zeros((n_state), dtype=torch.int8), requires_grad=False)
 
         '''sub-modules initialization'''
         self.register_buffer("positional_embedding", torch.empty((n_ctx, n_state),dtype=torch.int8))
-        self.input_alpha = nn.Parameter( torch.tensor(1.0) )
+        self.input_alpha = nn.Parameter( torch.ones(1) )
         self.gelu1 = GELU_int()
         self.gelu2 = GELU_int(out_channel_num=self.n_state)
         self.conv1 = Conv1d_int(n_mels, n_state, kernel_size=3, padding=1)
         self.conv2 = Conv1d_int(n_state, n_state, kernel_size=3, stride=2, padding=1)
         self.blocks: Iterable[ResidualAttentionBlock_int] = nn.ModuleList(
-            [ResidualAttentionBlock_int(n_state, n_head, encoder=True) for _ in range(n_layer)]
+            [ResidualAttentionBlock_int(n_state, n_head) for _ in range(n_layer)]
         )
         self.ln_post = LayerNorm_int(n_state)
     
@@ -692,16 +691,40 @@ class AudioEncoder_int(nn.Module):
         # add positional embedding ( offline quantized )
         x = (x.int() + self.positional_embedding)
         x = Rshift(x.mul(self.req_multiplier.int()), self.req_shiftmount)
-        x = x.clamp(min=-self.blocks[0].attn_ln.act_range, max=self.blocks[0].attn_ln.act_range).to(torch.int16)
+        x = x.clamp(min=-self.act_range, max=self.act_range).to(torch.int16)
         
         '''Pass through Transformer Blocks'''
         for _ in range(self.n_layer):
             x = self.blocks[_](x)
 
         '''Compute Final LayerNorm'''
-        x = self.ln_post(x)
+        x = self.ln_post(x)[0]
 
         return x
+    
+    
+    @staticmethod
+    def copy_param(quant_layer):
+        new_layer = AudioEncoder_int(
+            n_mels=quant_layer.n_mels,
+            n_ctx=quant_layer.n_ctx,
+            n_state=quant_layer.n_state,
+            n_head=quant_layer.n_head,
+            n_layer=quant_layer.n_layer
+        )
+        new_layer.req_multiplier.data.copy_(quant_layer.req_multiplier.data)
+        new_layer.req_shiftmount.data.copy_(quant_layer.req_shiftmount.data)
+        new_layer.positional_embedding.data.copy_(quant_layer.positional_embedding.data)
+        new_layer.input_alpha.data.copy_(quant_layer.input_alpha.data)
+        new_layer.gelu1 = GELU_int.copy_param(quant_layer.gelu1)
+        new_layer.gelu2 = GELU_int.copy_param(quant_layer.gelu2)
+        new_layer.conv1 = Conv1d_int.copy_param(quant_layer.conv1)
+        new_layer.conv2 = Conv1d_int.copy_param(quant_layer.conv2)
+        for i in range(quant_layer.n_layer):
+            new_layer.blocks[i] = ResidualAttentionBlock_int.copy_param(quant_layer.blocks[i])
+        new_layer.ln_post = LayerNorm_int.copy_param(quant_layer.ln_post)
+
+        return new_layer.to(quant_layer.req_multiplier.device)
 
 
 
@@ -713,7 +736,6 @@ class TextDecoder_int(nn.Module):
         n_state: int,
         n_head: int,
         n_layer: int,
-        debug: bool = False
     ):
         '''inherit from nn.Module'''
         super().__init__()
@@ -724,20 +746,20 @@ class TextDecoder_int(nn.Module):
         self.n_state = n_state
         self.n_head = n_head
         self.n_layer = n_layer
-        self.debug = debug
 
         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
-        self.act_bit = 8     # positional encoding
+        self.dequant_need = True
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
-        self.act_range = 127    # Signed, 2**(self.act_bit-1)-1
+        self.logit_range = 127   # Signed, 2**(self.act_bit-1)-1
+        self.act_range = 16383   # Signed, 2**(self.act_bit-1)-1
 
         '''Quantization Parameters initialization'''
         self.req_multiplier = nn.Parameter(torch.ones(1, dtype=torch.uint8), requires_grad=False)
         self.req_shiftmount = nn.Parameter(torch.zeros(1, dtype=torch.int8), requires_grad=False)
-        self.clf_req_multiplier = torch.nn.Parameter(torch.ones(1, dtype=torch.uint8), requires_grad=False)
+        self.clf_req_multiplier = torch.nn.Parameter(torch.ones(1, dtype=torch.uint32), requires_grad=False)
         self.clf_req_shiftmount = torch.nn.Parameter(torch.zeros(1, dtype=torch.int8), requires_grad=False)
-        self.act_logits_alpha = torch.nn.Parameter(torch.tensor(1.0))
+        self.act_logits_alpha = torch.nn.Parameter(torch.ones(1))
 
         self.token_embedding = nn.Embedding(n_vocab, n_state)
         self.token_embedding.weight = nn.Parameter(
@@ -771,25 +793,51 @@ class TextDecoder_int(nn.Module):
         offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
 
         '''Calculate token embeddings with/without quantization'''
-        x = ( self.token_embedding(x).to(torch.int32) + self.positional_embedding[offset : offset + x.shape[-1]] )
+        x = ( self.token_embedding(x).to(torch.int32) + self.positional_embedding[offset : offset + x.shape[-1]].to(torch.int32) )
         x = Rshift(x.mul(self.req_multiplier.int()), self.req_shiftmount)
-        x = x.clamp(min=-self.blocks[0].attn_ln.act_range, max=self.blocks[0].attn_ln.act_range).to(torch.int16)
+        x = x.clamp(min=-self.act_range, max=self.act_range).to(torch.int16)
 
         for _ in range(self.n_layer):
             x = self.blocks[_](x, xa, mask=self.mask, kv_cache=kv_cache)
 
-        x = self.ln(x)
+        x = self.ln(x)[0]
 
         # int8 matmul with token embedding weight
         if torch.cuda.is_available(): # if GPU is available, use faster int8 GEMM
             x = int8_linear_matmul(x, self.token_embedding.weight)
         else:
-            x = w8a8.s8s8s32_gemm(x.contiguous(), self.token_embedding.weight)
+            x = torch.matmul(x.int(), self.token_embedding.weight.int().t())
         # requant logits
-        x = Rshift(x.mul(self.clf_req_multiplier.int()), self.clf_req_shiftmount)
-        x= x.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
-        x = x.float().div(self.act_logits_alpha)
+        x = (x.long().mul(self.clf_req_multiplier.long())>>32).int()
+        x = Rshift(x, self.clf_req_shiftmount)
+        x = x.clamp(min=-self.logit_range, max=self.logit_range).to(torch.int8)
+        if self.dequant_need:
+            x = x.float().div(self.act_logits_alpha)
         return x
+    
+    
+    @staticmethod
+    def copy_param(quant_layer):
+        new_layer = TextDecoder_int(
+            n_vocab=quant_layer.n_vocab,
+            n_ctx=quant_layer.n_ctx,
+            n_state=quant_layer.n_state,
+            n_head=quant_layer.n_head,
+            n_layer=quant_layer.n_layer
+        )
+        new_layer.req_multiplier.data.copy_(quant_layer.req_multiplier.data)
+        new_layer.req_shiftmount.data.copy_(quant_layer.req_shiftmount.data)
+        new_layer.clf_req_multiplier.data.copy_(quant_layer.clf_req_multiplier.data)
+        new_layer.clf_req_shiftmount.data.copy_(quant_layer.clf_req_shiftmount.data)
+        new_layer.act_logits_alpha.data.copy_(quant_layer.act_logits_alpha.data)
+        new_layer.token_embedding.weight.data.copy_(quant_layer.token_embedding.weight.data)
+        new_layer.positional_embedding.data.copy_(quant_layer.positional_embedding.data)
+        for i in range(quant_layer.n_layer):
+            new_layer.blocks[i] = ResidualAttentionBlock_int.copy_param(quant_layer.blocks[i])
+        new_layer.ln = LayerNorm_int.copy_param(quant_layer.ln)
+        new_layer.mask.data.copy_(quant_layer.mask.data)
+
+        return new_layer.to(quant_layer.req_multiplier.device)
 
 
 

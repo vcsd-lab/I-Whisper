@@ -31,7 +31,7 @@ from .modules.functional import (
     LUT_Based_Inverse_Square_Root
 )
 from .modules.linear import Linear8, Linear32
-from .model_int import (GELU_int, LayerNorm_int, Conv1d_int, MultiHeadAttention_int, ResidualAttentionBlock_int)
+from .model_int import (GELU_int, LayerNorm_int, Conv1d_int, MultiHeadAttention_int, ResidualAttentionBlock_int, AudioEncoder_int, TextDecoder_int, Whisper_int)
 
 import matplotlib.pyplot as plt
 import os
@@ -1794,15 +1794,15 @@ class AudioEncoder_quantized(nn.Module):
         for i in range(len(self.blocks)):
             self.blocks[i].convert_to_int_mode(self.blocks[i+1].attn_ln.act_alpha if i+1 < len(self.blocks) else self.ln_post.act_alpha)
         self.ln_post.convert_to_int_mode(out_alpha)
-        self.ln_post = LayerNorm_int.copy_param(self.ln_post)
+        # self.ln_post = LayerNorm_int.copy_param(self.ln_post)
 
-        self.conv1 = Conv1d_int.copy_param(self.conv1)
-        self.conv2 = Conv1d_int.copy_param(self.conv2)
-        self.gelu1 = GELU_int.copy_param(self.gelu1)
-        self.gelu2 = GELU_int.copy_param(self.gelu2)
+        # self.conv1 = Conv1d_int.copy_param(self.conv1)
+        # self.conv2 = Conv1d_int.copy_param(self.conv2)
+        # self.gelu1 = GELU_int.copy_param(self.gelu1)
+        # self.gelu2 = GELU_int.copy_param(self.gelu2)
 
-        for i in range(len(self.blocks)):
-            self.blocks[i] = ResidualAttentionBlock_int.copy_param(self.blocks[i])
+        # for i in range(len(self.blocks)):
+        #     self.blocks[i] = ResidualAttentionBlock_int.copy_param(self.blocks[i])
         self.int_mode = True
         return self.int_mode
     
@@ -1959,9 +1959,9 @@ class TextDecoder_quantized(nn.Module):
         self.act_logits_range = 2**(self.act_logits_bit-1)-1    # Signed
 
         '''Quantization Parameters initialization'''
-        self.wgt_alpha = torch.nn.Parameter(torch.tensor(1.0))
-        self.act_cf_alpha = torch.nn.Parameter(torch.tensor(1.0))
-        self.act_logits_alpha = torch.nn.Parameter(torch.tensor(1.0))
+        self.wgt_alpha = torch.nn.Parameter(torch.ones(1))
+        self.act_cf_alpha = torch.nn.Parameter(torch.ones(1))
+        self.act_logits_alpha = torch.nn.Parameter(torch.ones(1))
         
         self.req_multiplier = nn.Parameter(torch.ones(1, dtype=torch.uint8), requires_grad=False)
         self.req_shiftmount = nn.Parameter(torch.zeros(1, dtype=torch.int8), requires_grad=False)
@@ -2031,7 +2031,6 @@ class TextDecoder_quantized(nn.Module):
             self.blocks[i].convert_to_int_mode(self.blocks[i+1].attn_ln.act_alpha if i+1 < len(self.blocks) else self.ln.act_alpha)
         
         self.ln.convert_to_int_mode(self.act_cf_alpha)
-        self.ln = LayerNorm_int.copy_param(self.ln)
         clf_req_alpha = self.act_logits_alpha / self.wgt_alpha / self.act_cf_alpha
         clf_req_alpha, clf_req_shmnt = torch.frexp(clf_req_alpha)
         clf_req_alpha = torch.round(clf_req_alpha * 2. ** 31).clamp(0,torch.iinfo(torch.uint32).max).to(torch.uint32)
@@ -2040,8 +2039,9 @@ class TextDecoder_quantized(nn.Module):
         self.clf_req_shiftmount.data = clf_req_shmnt.view(self.clf_req_shiftmount.shape)
         
         self.mask = (self.mask==float('-inf'))
-        for i in range(len(self.blocks)):
-            self.blocks[i] = ResidualAttentionBlock_int.copy_param(self.blocks[i])
+        # for i in range(len(self.blocks)):
+        #     self.blocks[i] = ResidualAttentionBlock_int.copy_param(self.blocks[i])
+        # self.ln = LayerNorm_int.copy_param(self.ln)
 
         self.int_mode = True
         return self.int_mode
@@ -2344,6 +2344,8 @@ class Whisper_quantized(nn.Module):
         success = []
         success.append(self.encoder.convert_to_int_mode(self.decoder.blocks[0].cross_attn.key.act_alpha))
         success.append(self.decoder.convert_to_int_mode())
+        self.encoder = AudioEncoder_int.copy_param(self.encoder)
+        self.decoder = TextDecoder_int.copy_param(self.decoder)
         return all(success)
         
 
