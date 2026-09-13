@@ -31,3 +31,9 @@ torch::Tensor linear8_accum_scalar_debug_torch(
     const std::optional<torch::Tensor>& bias,
     const std::optional<torch::Tensor>& weight_zero
 );
+
+torch::Tensor linear8_requant_scalar_debug_torch(
+    const torch::Tensor& input,
+    const torch::Tensor& multiplier,
+    const torch::Tensor& shift
+);

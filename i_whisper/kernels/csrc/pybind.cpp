@@ -27,4 +27,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "linear8_accum_scalar_debug",
         &linear8_accum_scalar_debug_torch
     );
+    m.def(
+        "linear8_requant_scalar_debug",
+        &linear8_requant_scalar_debug_torch
+    );
 }

@@ -1,4 +1,5 @@
 #include "linear8.h"
+#include "../common/fixedpoint.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -116,6 +117,28 @@ namespace iwhisper
                 }
 
                 output[m * N + n] = acc;
+            }
+        }
+    }
+
+    void linear8_requant_scalar(
+        const int32_t *input,
+        const uint32_t *multiplier,
+        const int8_t *shift,
+        int32_t *output,
+        int64_t M,
+        int64_t N)
+    {
+        for (int64_t m = 0; m < M; ++m)
+        {
+            for (int64_t n = 0; n < N; ++n)
+            {
+                const int64_t index = m * N + n;
+
+                output[index] = fixedpoint::requant(
+                    input[index],
+                    multiplier[n],
+                    static_cast<uint32_t>(shift[n]));
             }
         }
     }

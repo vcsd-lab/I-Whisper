@@ -3,8 +3,6 @@ import torch
 
 from i_whisper.kernels import _C
 
-
-
 def linear8_accum_reference(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -617,3 +615,315 @@ def test_linear8_accum_scalar_3d_input():
 
     
 
+def mulh_reference(
+    x,
+    multiplier
+):
+    out = (
+        x.to(torch.int64)
+        * multiplier.to(torch.int64)
+    ) >> 32
+
+    return out.to(torch.int32)
+
+
+def rounding_rshift_reference(
+    x: torch.Tensor,
+    shift: torch.Tensor,
+):
+    """
+    x:     [*, N] int32/int64
+    shift: [N] int8
+    """
+
+    x = x.to(torch.int64)
+    shift = shift.to(torch.int64)
+
+    # broadcast [N] over all leading dimensions
+    shift_view = shift.view(
+        *([1] * (x.dim() - 1)),
+        -1,
+    )
+
+    result = x.clone()
+
+    mask = shift_view > 0
+
+    # PyTorch broadcast this to x's shape
+    rounding = (
+        (1 << torch.clamp(shift_view - 1, min=0))
+        - (x < 0).to(torch.int64)
+    )
+
+    shifted = (x + rounding) >> shift_view
+
+    result = torch.where(
+        mask,
+        shifted,
+        result,
+    )
+
+    return result
+
+
+def requant_reference(
+    accum: torch.Tensor,
+    multiplier: torch.Tensor,
+    shift: torch.Tensor,
+):
+    multiplier_view = multiplier.to(torch.int64).view(
+        *([1] * (accum.dim() - 1)),
+        -1,
+    )
+
+    mulh = (
+        accum.to(torch.int64)
+        * multiplier_view
+    ) >> 32
+
+    return rounding_rshift_reference(
+        mulh,
+        shift,
+    ).to(torch.int32)
+
+
+def test_linear8_requant_handcrafted_mulh_only():
+    accum = torch.tensor(
+        [
+            [
+                100,
+                -100,
+                1234567,
+                -1234567,
+            ]
+        ],
+        dtype=torch.int32,
+    )
+
+    multiplier = torch.tensor(
+        [
+            0x80000000,
+            0x80000000,
+            0x40000000,
+            0x40000000,
+        ],
+        dtype=torch.uint32,
+    )
+
+    shift = torch.zeros(
+        4,
+        dtype=torch.int8,
+    )
+
+    actual = _C.linear8_requant_scalar_debug(
+        accum,
+        multiplier,
+        shift,
+    )
+
+    expected = (
+        accum.to(torch.int64)
+        * multiplier.to(torch.int64)
+    ) >> 32
+
+    expected = expected.to(torch.int32)
+
+    assert torch.equal(
+        actual,
+        expected,
+    )
+
+
+def test_linear8_requant_rounding_boundaries():
+    accum = torch.tensor(
+        [[
+             2,
+             3,
+            -2,
+            -3,
+             6,
+             7,
+            -6,
+            -7,
+        ]],
+        dtype=torch.int32,
+    )
+
+    multiplier = torch.full(
+        (8,),
+        0x80000000,
+        dtype=torch.uint32,
+    )
+
+    shift = torch.tensor(
+        [1, 1, 1, 1, 2, 2, 2, 2],
+        dtype=torch.int8,
+    )
+
+    actual = _C.linear8_requant_scalar_debug(
+        accum,
+        multiplier,
+        shift,
+    )
+
+    expected = requant_reference(
+        accum,
+        multiplier,
+        shift,
+    )
+
+    assert torch.equal(actual, expected), (
+        f"\nexpected:\n{expected}"
+        f"\nactual:\n{actual}"
+    )
+
+
+def test_linear8_requant_shift_zero():
+    accum = torch.tensor(
+        [[
+            0,
+            1,
+            -1,
+            1234567,
+            -1234567,
+        ]],
+        dtype=torch.int32,
+    )
+
+    multiplier = torch.tensor(
+        [
+            0x80000000,
+            0x40000000,
+            0xFFFFFFFF,
+            0x80000000,
+            0x80000000,
+        ],
+        dtype=torch.uint32,
+    )
+
+    shift = torch.zeros(
+        5,
+        dtype=torch.int8,
+    )
+
+    actual = _C.linear8_requant_scalar_debug(
+        accum,
+        multiplier,
+        shift,
+    )
+
+    expected = requant_reference(
+        accum,
+        multiplier,
+        shift,
+    )
+
+    assert torch.equal(actual, expected)
+
+
+
+def test_linear8_requant_per_channel_parameters():
+    accum = torch.tensor(
+        [
+            [1000, 1000, 1000, 1000],
+            [-1000, -1000, -1000, -1000],
+        ],
+        dtype=torch.int32,
+    )
+
+    multiplier = torch.tensor(
+        [
+            0x80000000,
+            0x40000000,
+            0x20000000,
+            0x7FFFFFFF,
+        ],
+        dtype=torch.uint32,
+    )
+
+    shift = torch.tensor(
+        [0, 1, 2, 3],
+        dtype=torch.int8,
+    )
+
+    actual = _C.linear8_requant_scalar_debug(
+        accum,
+        multiplier,
+        shift,
+    )
+
+    expected = requant_reference(
+        accum,
+        multiplier,
+        shift,
+    )
+
+    assert torch.equal(actual, expected)
+
+
+def test_linear8_requant_3d():
+    torch.manual_seed(0)
+
+    B = 2
+    T = 7
+    N = 13
+
+    accum = torch.randint(
+        -1_000_000,
+        1_000_001,
+        (B, T, N),
+        dtype=torch.int32,
+    )
+
+    multiplier = torch.randint(
+        1,
+        2**32,
+        (N,),
+        dtype=torch.uint32,
+    )
+
+    shift = torch.randint(
+        0,
+        8,
+        (N,),
+        dtype=torch.int8,
+    )
+
+    actual = _C.linear8_requant_scalar_debug(
+        accum,
+        multiplier,
+        shift,
+    )
+
+    expected = requant_reference(
+        accum,
+        multiplier,
+        shift,
+    )
+
+    assert actual.shape == (B, T, N)
+    assert torch.equal(actual, expected)
+
+
+def test_linear8_requant_rejects_wrong_shift_shape():
+    accum = torch.ones(
+        (7, 13),
+        dtype=torch.int32,
+    )
+
+    multiplier = torch.ones(
+        13,
+        dtype=torch.uint32,
+    )
+
+    shift = torch.ones(
+        12,  # wrong
+        dtype=torch.int8,
+    )
+
+    with pytest.raises(RuntimeError):
+        _C.linear8_requant_scalar_debug(
+            accum,
+            multiplier,
+            shift,
+        )

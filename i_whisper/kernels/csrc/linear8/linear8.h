@@ -37,5 +37,15 @@ namespace iwhisper
 
         bool has_bias,
         bool asymmetric);
+    
+
+    void linear8_requant_scalar(
+        const int32_t* input,
+        const uint32_t* multiplier,
+        const int8_t* shift,
+        int32_t* output,
+        int64_t M,
+        int64_t N
+    );
 
 } // namespace iwhisper
