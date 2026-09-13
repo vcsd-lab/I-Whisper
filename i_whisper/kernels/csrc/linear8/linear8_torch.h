@@ -22,7 +22,9 @@ torch::Tensor linear8_scalar_torch(
     const torch::Tensor& x,
     const torch::Tensor& weight,
     const std::optional<torch::Tensor>& bias,
-    const std::optional<torch::Tensor>& weight_zero
+    const std::optional<torch::Tensor>& weight_zero,
+    const torch::Tensor& multiplier,
+    const torch::Tensor& shift
 );
 
 torch::Tensor linear8_accum_scalar_debug_torch(

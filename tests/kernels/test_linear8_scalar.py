@@ -937,3 +937,281 @@ def test_linear8_requant_rejects_wrong_shift_shape():
             multiplier,
             shift,
         )
+
+
+
+def linear8_reference(
+    x,
+    weight,
+    bias,
+    weight_zero,
+    multiplier,
+    shift,
+):
+    out = torch.matmul(
+        x.to(torch.int32),
+        weight.to(torch.int32).t(),
+    )
+
+    if bias is not None:
+        out = out + bias
+
+    if weight_zero is not None:
+        x_sum = torch.sum(
+            x.to(torch.int32),
+            dim=-1,
+            keepdim=True,
+        )
+
+        out = (
+            out
+            - x_sum
+            * weight_zero.to(torch.int32)
+        )
+
+    # MULH
+    multiplier_view = (
+        multiplier
+        .to(torch.int64)
+        .view(
+            *([1] * (out.dim() - 1)),
+            -1,
+        )
+    )
+
+    out = (
+        out.to(torch.int64)
+        * multiplier_view
+    ) >> 32
+
+    # rounded Rshift
+    out = rounding_rshift_reference(
+        out,
+        shift,
+    )
+
+    # Linear8 uses [-127, 127]
+    out = torch.clamp(
+        out,
+        -127,
+        127,
+    )
+
+    return out.to(torch.int8)
+
+
+
+def test_linear8_scalar_handcrafted_complete():
+    x = torch.tensor(
+        [
+            [1, 2, 3],
+            [-1, 4, 2],
+        ],
+        dtype=torch.int8,
+    )
+
+    weight = torch.tensor(
+        [
+            [1, 0, -1],
+            [2, 1, 3],
+        ],
+        dtype=torch.int8,
+    )
+
+    bias = torch.tensor(
+        [10, -5],
+        dtype=torch.int32,
+    )
+
+    weight_zero = torch.tensor(
+        [2, -1],
+        dtype=torch.int8,
+    )
+
+    multiplier = torch.tensor(
+        [
+            0x80000000,
+            0x40000000,
+        ],
+        dtype=torch.uint32,
+    )
+
+    shift = torch.tensor(
+        [1, 2],
+        dtype=torch.int8,
+    )
+
+    actual = _C.linear8_scalar(
+        x,
+        weight,
+        bias,
+        weight_zero,
+        multiplier,
+        shift,
+    )
+
+    expected = linear8_reference(
+        x,
+        weight,
+        bias,
+        weight_zero,
+        multiplier,
+        shift,
+    )
+
+    assert actual.dtype == torch.int8
+    assert actual.shape == (2, 2)
+    assert torch.equal(
+        actual,
+        expected,
+    )
+
+
+def test_linear8_scalar_saturation():
+    x = torch.tensor(
+        [
+            [127],
+            [-127],
+        ],
+        dtype=torch.int8,
+    )
+
+    weight = torch.tensor(
+        [
+            [127],
+            [-127],
+        ],
+        dtype=torch.int8,
+    )
+
+    multiplier = torch.tensor(
+        [
+            0xFFFFFFFF,
+            0xFFFFFFFF,
+        ],
+        dtype=torch.uint32,
+    )
+
+    shift = torch.zeros(
+        2,
+        dtype=torch.int8,
+    )
+
+    actual = _C.linear8_scalar(
+        x,
+        weight,
+        None,
+        None,
+        multiplier,
+        shift,
+    )
+
+    expected = linear8_reference(
+        x,
+        weight,
+        None,
+        None,
+        multiplier,
+        shift,
+    )
+
+    assert torch.equal(
+        actual,
+        expected,
+    )
+
+    assert actual.max() <= 127
+    assert actual.min() >= -127
+
+
+@pytest.mark.parametrize(
+    "use_bias,use_zero",
+    [
+        (False, False),
+        (True,  False),
+        (False, True),
+        (True,  True),
+    ],
+)
+def test_linear8_scalar_complete_random(
+    use_bias,
+    use_zero,
+):
+    torch.manual_seed(1234)
+
+    M = 7
+    K = 11
+    N = 13
+
+    x = torch.randint(
+        -128,
+        128,
+        (M, K),
+        dtype=torch.int8,
+    )
+
+    weight = torch.randint(
+        -128,
+        128,
+        (N, K),
+        dtype=torch.int8,
+    )
+
+    bias = (
+        torch.randint(
+            -100_000,
+            100_001,
+            (N,),
+            dtype=torch.int32,
+        )
+        if use_bias
+        else None
+    )
+
+    zero = (
+        torch.randint(
+            -16,
+            17,
+            (N,),
+            dtype=torch.int8,
+        )
+        if use_zero
+        else None
+    )
+
+    multiplier = torch.randint(
+        1,
+        2**32,
+        (N,),
+        dtype=torch.uint32,
+    )
+
+    shift = torch.randint(
+        0,
+        8,
+        (N,),
+        dtype=torch.int8,
+    )
+
+    actual = _C.linear8_scalar(
+        x,
+        weight,
+        bias,
+        zero,
+        multiplier,
+        shift,
+    )
+
+    expected = linear8_reference(
+        x,
+        weight,
+        bias,
+        zero,
+        multiplier,
+        shift,
+    )
+
+    assert torch.equal(
+        actual,
+        expected,
+    )

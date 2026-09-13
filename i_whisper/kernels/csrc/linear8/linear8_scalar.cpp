@@ -68,12 +68,16 @@ namespace iwhisper
                     acc += bias[n]; // Assuming bias is a single value for the row
                 }
 
-                // temporary smoke-test behavior
-                acc = std::max<int32_t>(-128, acc);
+                acc = fixedpoint::requant(
+                    acc,
+                    multiplier[n],
+                    static_cast<uint32_t>(shift[n]));
+
+                // Clamp (Saturate) the result to int8_t range
+                acc = std::max<int32_t>(-127, acc);
                 acc = std::min<int32_t>(127, acc);
 
-                output[m * N + n] =
-                    static_cast<int8_t>(acc);
+                output[m * N + n] = static_cast<int8_t>(acc);
             }
         }
     }
