@@ -23,4 +23,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         &linear8_scalar_torch,
         "I-Whisper Linear8 scalar kernel"
     );
+    m.def(
+        "linear8_accum_scalar_debug",
+        &linear8_accum_scalar_debug_torch
+    );
 }
