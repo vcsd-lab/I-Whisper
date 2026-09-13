@@ -495,13 +495,23 @@ def test_linear8_accum_scalar_bias_with_zero():
         (True,  True),
     ],
 )
+@pytest.mark.parametrize(
+    "M,K,N",
+    [
+        (7, 11, 13),
+        (1, 11, 13),
+        (7, 1, 13),
+        (7, 11, 1),
+    ],
+)
 def test_linear8_accum_scalar_optional_paths(
     use_bias,
     use_zero,
+    M,K,N
 ):
-    M = 7
-    K = 11
-    N = 13
+    # M = 7
+    # K = 11
+    # N = 13
 
     torch.manual_seed(0)
 

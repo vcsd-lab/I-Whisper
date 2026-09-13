@@ -6,7 +6,6 @@
 #include "linear8_torch.h"
 #include "linear8.h"
 
-#include <vector>
 #include <string>
 
 static inline void CHECK_CPU_INT8(
