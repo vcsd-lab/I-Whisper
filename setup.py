@@ -27,11 +27,33 @@ sources = [
 include_dirs = []
 define_macros = []
 
-compile_args = [
-    "-O0",
-    "-g",
-    "-std=c++20",
-]
+
+build_type = os.environ.get(
+    "IWHISPER_BUILD_TYPE",
+    "debug",
+).lower()
+
+if build_type == "debug":
+    compile_args = [
+        "-O0",
+        "-g",
+        "-std=c++20",
+    ]
+
+elif build_type == "release":
+    compile_args = [
+        "-O3",
+        "-DNDEBUG",
+        "-std=c++20",
+    ]
+
+else:
+    raise RuntimeError(
+        f"Unknown build type: {build_type}"
+    )
+
+
+
 
 def get_cpu_features():
     cpuinfo = Path("/proc/cpuinfo")
