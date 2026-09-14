@@ -8,6 +8,12 @@
 
 #include <string>
 
+enum class Linear8Backend
+{
+    Scalar,
+    Simde
+};
+
 static inline void CHECK_CPU_INT8(
     const torch::Tensor &tensor,
     const std::string &name)
@@ -75,13 +81,14 @@ static inline void CHECK_CPU_UINT32(
         name + " must be contiguous");
 }
 
-torch::Tensor linear8_scalar_torch(
+static torch::Tensor linear8_torch_impl(
     const torch::Tensor &x,
     const torch::Tensor &weight,
     const std::optional<torch::Tensor> &bias,
     const std::optional<torch::Tensor> &weight_zero,
     const torch::Tensor &multiplier,
-    const torch::Tensor &shift)
+    const torch::Tensor &shift,
+    Linear8Backend backend)
 {
     // --------------------------------
     // CHECK: Input types requirements
@@ -191,20 +198,89 @@ torch::Tensor linear8_scalar_torch(
         has_zero);
 
     return output;
+
+    switch (backend)
+    {
+    case Linear8Backend::Scalar:
+        iwhisper::linear8_scalar(
+            x_ptr,
+            weight_ptr,
+            bias_ptr,
+            weight_zero_ptr,
+            multiplier_ptr,
+            shift_ptr,
+            output_ptr,
+            M,
+            K,
+            N,
+            has_bias,
+            has_zero);
+        break;
+
+    case Linear8Backend::Simde:
+        iwhisper::linear8_simde(
+            x_ptr,
+            weight_ptr,
+            bias_ptr,
+            weight_zero_ptr,
+            multiplier_ptr,
+            shift_ptr,
+            output_ptr,
+            M,
+            K,
+            N,
+            has_bias,
+            has_zero);
+        break;
+    }
+
+    return output;
 }
 
-enum class Linear8AccumBackend
+torch::Tensor linear8_scalar_torch(
+    const torch::Tensor &x,
+    const torch::Tensor &weight,
+    const std::optional<torch::Tensor> &bias,
+    const std::optional<torch::Tensor> &weight_zero,
+    const torch::Tensor &multiplier,
+    const torch::Tensor &shift)
 {
-    Scalar,
-    Simde
-};
+    return linear8_torch_impl(
+        x,
+        weight,
+        bias,
+        weight_zero,
+        multiplier,
+        shift,
+        Linear8Backend::Scalar);
+}
+
+torch::Tensor linear8_simde_torch(
+    const torch::Tensor &x,
+    const torch::Tensor &weight,
+    const std::optional<torch::Tensor> &bias,
+    const std::optional<torch::Tensor> &weight_zero,
+    const torch::Tensor &multiplier,
+    const torch::Tensor &shift)
+{
+    return linear8_torch_impl(
+        x,
+        weight,
+        bias,
+        weight_zero,
+        multiplier,
+        shift,
+        Linear8Backend::Simde);
+}
+
+
 
 static torch::Tensor linear8_accum_debug_torch_impl(
     const torch::Tensor &x,
     const torch::Tensor &weight,
     const std::optional<torch::Tensor> &bias,
     const std::optional<torch::Tensor> &weight_zero,
-    Linear8AccumBackend backend)
+    Linear8Backend backend)
 {
     CHECK_CPU_INT8(x, "x");
     CHECK_CPU_INT8(weight, "weight");
@@ -284,7 +360,7 @@ static torch::Tensor linear8_accum_debug_torch_impl(
 
     switch (backend)
     {
-    case Linear8AccumBackend::Scalar:
+    case Linear8Backend::Scalar:
         iwhisper::linear8_accum_scalar(
             x_ptr,
             weight_ptr,
@@ -298,7 +374,7 @@ static torch::Tensor linear8_accum_debug_torch_impl(
             asymmetric);
         break;
 
-    case Linear8AccumBackend::Simde:
+    case Linear8Backend::Simde:
         iwhisper::linear8_accum_simde(
             x_ptr,
             weight_ptr,
@@ -331,7 +407,7 @@ torch::Tensor linear8_accum_scalar_debug_torch(
         weight,
         bias,
         weight_zero,
-        Linear8AccumBackend::Scalar);
+        Linear8Backend::Scalar);
 }
 torch::Tensor linear8_accum_simde_debug_torch(
     const torch::Tensor &x,
@@ -344,7 +420,7 @@ torch::Tensor linear8_accum_simde_debug_torch(
         weight,
         bias,
         weight_zero,
-        Linear8AccumBackend::Simde);
+        Linear8Backend::Simde);
 }
 
 torch::Tensor linear8_requant_scalar_debug_torch(

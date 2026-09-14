@@ -74,8 +74,10 @@ namespace iwhisper
                     static_cast<uint32_t>(shift[n]));
 
                 // Clamp (Saturate) the result to int8_t range
-                acc = std::max<int32_t>(-127, acc);
-                acc = std::min<int32_t>(127, acc);
+                acc = std::clamp(
+                        acc,
+                        int32_t{-127},
+                        int32_t{127});
 
                 output[m * N + n] = static_cast<int8_t>(acc);
             }
