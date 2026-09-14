@@ -75,7 +75,6 @@ static inline void CHECK_CPU_UINT32(
         name + " must be contiguous");
 }
 
-
 torch::Tensor linear8_scalar_torch(
     const torch::Tensor &x,
     const torch::Tensor &weight,
@@ -194,19 +193,21 @@ torch::Tensor linear8_scalar_torch(
     return output;
 }
 
-/**
- * A debug version that only accumulates the results into int32_t output, without quantization.
- * This is useful for testing and debugging the accumulation logic.
- */
-torch::Tensor linear8_accum_scalar_debug_torch(
+enum class Linear8AccumBackend
+{
+    Scalar,
+    Simde
+};
+
+static torch::Tensor linear8_accum_debug_torch_impl(
     const torch::Tensor &x,
     const torch::Tensor &weight,
     const std::optional<torch::Tensor> &bias,
-    const std::optional<torch::Tensor> &weight_zero)
+    const std::optional<torch::Tensor> &weight_zero,
+    Linear8AccumBackend backend)
 {
     CHECK_CPU_INT8(x, "x");
     CHECK_CPU_INT8(weight, "weight");
-
 
     const int64_t K = x.size(-1);
     const int64_t N = weight.size(0);
@@ -281,19 +282,69 @@ torch::Tensor linear8_accum_scalar_debug_torch(
         weight_zero_ptr = zero.data_ptr<int8_t>();
     }
 
-    iwhisper::linear8_accum_scalar(
-        x_ptr,
-        weight_ptr,
-        bias_ptr,
-        weight_zero_ptr,
-        output_ptr,
-        M,
-        K,
-        N,
-        has_bias,
-        asymmetric);
+    switch (backend)
+    {
+    case Linear8AccumBackend::Scalar:
+        iwhisper::linear8_accum_scalar(
+            x_ptr,
+            weight_ptr,
+            bias_ptr,
+            weight_zero_ptr,
+            output_ptr,
+            M,
+            K,
+            N,
+            has_bias,
+            asymmetric);
+        break;
+
+    case Linear8AccumBackend::Simde:
+        iwhisper::linear8_accum_simde(
+            x_ptr,
+            weight_ptr,
+            bias_ptr,
+            weight_zero_ptr,
+            output_ptr,
+            M,
+            K,
+            N,
+            has_bias,
+            asymmetric);
+        break;
+    }
 
     return output;
+}
+
+/**
+ * debug version that only accumulates the results into int32_t output, without quantization.
+ * This is useful for testing and debugging the accumulation logic.
+ */
+torch::Tensor linear8_accum_scalar_debug_torch(
+    const torch::Tensor &x,
+    const torch::Tensor &weight,
+    const std::optional<torch::Tensor> &bias,
+    const std::optional<torch::Tensor> &weight_zero)
+{
+    return linear8_accum_debug_torch_impl(
+        x,
+        weight,
+        bias,
+        weight_zero,
+        Linear8AccumBackend::Scalar);
+}
+torch::Tensor linear8_accum_simde_debug_torch(
+    const torch::Tensor &x,
+    const torch::Tensor &weight,
+    const std::optional<torch::Tensor> &bias,
+    const std::optional<torch::Tensor> &weight_zero)
+{
+    return linear8_accum_debug_torch_impl(
+        x,
+        weight,
+        bias,
+        weight_zero,
+        Linear8AccumBackend::Simde);
 }
 
 torch::Tensor linear8_requant_scalar_debug_torch(
@@ -328,8 +379,7 @@ torch::Tensor linear8_requant_scalar_debug_torch(
     // --------------------------------
     auto output = torch::empty_like(
         input,
-        input.options().dtype(torch::kInt32)
-    );
+        input.options().dtype(torch::kInt32));
 
     // --------------------------------
     // Raw pointers
@@ -337,7 +387,7 @@ torch::Tensor linear8_requant_scalar_debug_torch(
     const int32_t *input_ptr = input.data_ptr<int32_t>();
     const uint32_t *multiplier_ptr = multiplier.data_ptr<uint32_t>();
     const int8_t *shift_ptr = shift.data_ptr<int8_t>();
-    int32_t* output_ptr = output.data_ptr<int32_t>();
+    int32_t *output_ptr = output.data_ptr<int32_t>();
 
     iwhisper::linear8_requant_scalar(
         input_ptr,
@@ -345,8 +395,7 @@ torch::Tensor linear8_requant_scalar_debug_torch(
         shift_ptr,
         output_ptr,
         M,
-        N
-    );
+        N);
 
     return output;
 }

@@ -4,20 +4,17 @@
 
 #include "linear8/linear8_torch.h"
 
-
-std::string hello() {
+std::string hello()
+{
     return "Hello from I-Whisper C++ extension!";
 }
 
-
-
-
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
+{
     m.def(
         "hello",
         &hello,
-        "I-Whisper C++ extension smoke test"
-    );
+        "I-Whisper C++ extension smoke test");
     m.def(
         "linear8_scalar",
         &linear8_scalar_torch,
@@ -27,14 +24,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("bias"),
         pybind11::arg("weight_zero"),
         pybind11::arg("multiplier"),
-        pybind11::arg("shift")
-    );
+        pybind11::arg("shift"));
     m.def(
         "linear8_accum_scalar_debug",
-        &linear8_accum_scalar_debug_torch
-    );
+        &linear8_accum_scalar_debug_torch);
     m.def(
         "linear8_requant_scalar_debug",
-        &linear8_requant_scalar_debug_torch
-    );
+        &linear8_requant_scalar_debug_torch);
+    m.def(
+        "linear8_accum_simde_debug",
+        &linear8_accum_simde_debug_torch,
+        "Linear8 SIMDe accumulator debug");
 }
