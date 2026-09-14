@@ -7,6 +7,86 @@
 namespace iwhisper
 {
 
+    // static inline int32_t dot_product_simde(
+    //     const int8_t *x,
+    //     const int8_t *weight,
+    //     int64_t K)
+    // {
+    //     int64_t k = 0;
+
+    //     simde_int32x4_t acc0 =
+    //         simde_vdupq_n_s32(0);
+
+    //     simde_int32x4_t acc1 =
+    //         simde_vdupq_n_s32(0);
+
+    //     for (; k + 15 < K; k += 16)
+    //     {
+    //         const simde_int8x16_t vx =
+    //             simde_vld1q_s8(x + k);
+
+    //         const simde_int8x16_t vw =
+    //             simde_vld1q_s8(weight + k);
+
+    //         // lower 8
+    //         const simde_int16x8_t x_lo =
+    //             simde_vmovl_s8(
+    //                 simde_vget_low_s8(vx));
+
+    //         const simde_int16x8_t w_lo =
+    //             simde_vmovl_s8(
+    //                 simde_vget_low_s8(vw));
+
+    //         // upper 8
+    //         const simde_int16x8_t x_hi =
+    //             simde_vmovl_s8(
+    //                 simde_vget_high_s8(vx));
+
+    //         const simde_int16x8_t w_hi =
+    //             simde_vmovl_s8(
+    //                 simde_vget_high_s8(vw));
+
+    //         const simde_int16x8_t prod_lo =
+    //             simde_vmulq_s16(
+    //                 x_lo,
+    //                 w_lo);
+
+    //         const simde_int16x8_t prod_hi =
+    //             simde_vmulq_s16(
+    //                 x_hi,
+    //                 w_hi);
+
+    //         acc0 = simde_vaddw_s16(
+    //             acc0,
+    //             simde_vget_low_s16(prod_lo));
+
+    //         acc1 = simde_vaddw_s16(
+    //             acc1,
+    //             simde_vget_high_s16(prod_lo));
+
+    //         acc0 = simde_vaddw_s16(
+    //             acc0,
+    //             simde_vget_low_s16(prod_hi));
+
+    //         acc1 = simde_vaddw_s16(
+    //             acc1,
+    //             simde_vget_high_s16(prod_hi));
+
+    //     }
+
+    //     int32_t sum =
+    //             simde_vaddvq_s32(acc0) +
+    //             simde_vaddvq_s32(acc1);
+
+    //     for (; k < K; ++k)
+    //     {
+    //         sum +=
+    //             static_cast<int32_t>(x[k]) *
+    //             static_cast<int32_t>(weight[k]);
+    //     }
+
+    //     return sum;
+    // }
     static inline int32_t dot_product_simde(
         const int8_t *x,
         const int8_t *weight,
@@ -14,10 +94,7 @@ namespace iwhisper
     {
         int64_t k = 0;
 
-        simde_int32x4_t acc0 =
-            simde_vdupq_n_s32(0);
-
-        simde_int32x4_t acc1 =
+        simde_int32x4_t vacc =
             simde_vdupq_n_s32(0);
 
         for (; k + 15 < K; k += 16)
@@ -28,57 +105,16 @@ namespace iwhisper
             const simde_int8x16_t vw =
                 simde_vld1q_s8(weight + k);
 
-            // lower 8
-            const simde_int16x8_t x_lo =
-                simde_vmovl_s8(
-                    simde_vget_low_s8(vx));
-
-            const simde_int16x8_t w_lo =
-                simde_vmovl_s8(
-                    simde_vget_low_s8(vw));
-
-            // upper 8
-            const simde_int16x8_t x_hi =
-                simde_vmovl_s8(
-                    simde_vget_high_s8(vx));
-
-            const simde_int16x8_t w_hi =
-                simde_vmovl_s8(
-                    simde_vget_high_s8(vw));
-
-            const simde_int16x8_t prod_lo =
-                simde_vmulq_s16(
-                    x_lo,
-                    w_lo);
-
-            const simde_int16x8_t prod_hi =
-                simde_vmulq_s16(
-                    x_hi,
-                    w_hi);
-
-            acc0 = simde_vaddw_s16(
-                acc0,
-                simde_vget_low_s16(prod_lo));
-
-            acc1 = simde_vaddw_s16(
-                acc1,
-                simde_vget_high_s16(prod_lo));
-
-            acc0 = simde_vaddw_s16(
-                acc0,
-                simde_vget_low_s16(prod_hi));
-
-            acc1 = simde_vaddw_s16(
-                acc1,
-                simde_vget_high_s16(prod_hi));
-
-            
+            vacc = simde_vdotq_s32(
+                vacc,
+                vx,
+                vw);
         }
 
         int32_t sum =
-                simde_vaddvq_s32(acc0) +
-                simde_vaddvq_s32(acc1);
+            simde_vaddvq_s32(vacc);
 
+        // tail
         for (; k < K; ++k)
         {
             sum +=
