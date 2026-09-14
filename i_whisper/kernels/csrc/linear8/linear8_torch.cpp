@@ -11,7 +11,7 @@
 enum class Linear8Backend
 {
     Scalar,
-    Simde
+    SIMD
 };
 
 static inline void CHECK_CPU_INT8(
@@ -183,22 +183,6 @@ static torch::Tensor linear8_torch_impl(
     // --------------------------------
     // Call the C++ kernel
     // --------------------------------
-    iwhisper::linear8_scalar(
-        x_ptr,
-        weight_ptr,
-        bias_ptr,
-        weight_zero_ptr,
-        multiplier_ptr,
-        shift_ptr,
-        output_ptr,
-        M,
-        K,
-        N,
-        has_bias,
-        has_zero);
-
-    return output;
-
     switch (backend)
     {
     case Linear8Backend::Scalar:
@@ -217,8 +201,8 @@ static torch::Tensor linear8_torch_impl(
             has_zero);
         break;
 
-    case Linear8Backend::Simde:
-        iwhisper::linear8_simde(
+    case Linear8Backend::SIMD:
+        iwhisper::linear8_simd(
             x_ptr,
             weight_ptr,
             bias_ptr,
@@ -255,7 +239,7 @@ torch::Tensor linear8_scalar_torch(
         Linear8Backend::Scalar);
 }
 
-torch::Tensor linear8_simde_torch(
+torch::Tensor linear8_simd_torch(
     const torch::Tensor &x,
     const torch::Tensor &weight,
     const std::optional<torch::Tensor> &bias,
@@ -270,7 +254,7 @@ torch::Tensor linear8_simde_torch(
         weight_zero,
         multiplier,
         shift,
-        Linear8Backend::Simde);
+        Linear8Backend::SIMD);
 }
 
 
@@ -374,8 +358,8 @@ static torch::Tensor linear8_accum_debug_torch_impl(
             asymmetric);
         break;
 
-    case Linear8Backend::Simde:
-        iwhisper::linear8_accum_simde(
+    case Linear8Backend::SIMD:
+        iwhisper::linear8_accum_simd(
             x_ptr,
             weight_ptr,
             bias_ptr,
@@ -409,7 +393,7 @@ torch::Tensor linear8_accum_scalar_debug_torch(
         weight_zero,
         Linear8Backend::Scalar);
 }
-torch::Tensor linear8_accum_simde_debug_torch(
+torch::Tensor linear8_accum_simd_debug_torch(
     const torch::Tensor &x,
     const torch::Tensor &weight,
     const std::optional<torch::Tensor> &bias,
@@ -420,7 +404,7 @@ torch::Tensor linear8_accum_simde_debug_torch(
         weight,
         bias,
         weight_zero,
-        Linear8Backend::Simde);
+        Linear8Backend::SIMD);
 }
 
 torch::Tensor linear8_requant_scalar_debug_torch(

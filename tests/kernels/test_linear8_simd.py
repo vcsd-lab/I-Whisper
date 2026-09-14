@@ -30,7 +30,7 @@ from i_whisper.kernels import _C
         (True,  True),
     ],
 )
-def test_linear8_accum_simde_matches_scalar(
+def test_linear8_accum_simd_matches_scalar(
     M,
     K,
     N,
@@ -82,7 +82,7 @@ def test_linear8_accum_simde_matches_scalar(
         zero,
     )
 
-    simde = _C.linear8_accum_simde_debug(
+    simd = _C.linear8_accum_simd_debug(
         x,
         weight,
         bias,
@@ -90,7 +90,7 @@ def test_linear8_accum_simde_matches_scalar(
     )
 
     assert torch.equal(
-        simde,
+        simd,
         scalar,
     )
 
@@ -119,7 +119,7 @@ def test_linear8_accum_simde_matches_scalar(
         (True,  True),
     ],
 )
-def test_linear8_simde_matches_scalar(
+def test_linear8_simd_matches_scalar(
     M, K, N,
     use_bias,
     use_zero,
@@ -181,7 +181,7 @@ def test_linear8_simde_matches_scalar(
         shift,
     )
 
-    simde = _C.linear8_simde(
+    simd = _C.linear8_simd(
         x,
         weight,
         bias,
@@ -190,4 +190,4 @@ def test_linear8_simde_matches_scalar(
         shift,
     )
 
-    assert torch.equal(simde, scalar)
+    assert torch.equal(simd, scalar)

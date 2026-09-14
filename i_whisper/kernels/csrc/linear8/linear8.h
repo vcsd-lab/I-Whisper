@@ -23,7 +23,7 @@ namespace iwhisper
         bool has_bias,
         bool asymmetric);
 
-    void linear8_simde(
+    void linear8_simd(
         const int8_t *x,
         const int8_t *weight,
         const int32_t *bias,
@@ -51,7 +51,7 @@ namespace iwhisper
         bool has_bias,
         bool asymmetric);
 
-    void linear8_accum_simde(
+    void linear8_accum_simd(
         const int8_t *x,
         const int8_t *weight,
         const int32_t *bias,

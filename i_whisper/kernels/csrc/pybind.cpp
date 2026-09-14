@@ -26,9 +26,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         pybind11::arg("multiplier"),
         pybind11::arg("shift"));
     m.def(
-        "linear8_simde",
-        &linear8_simde_torch,
-        "I-Whisper complete Linear8 SIMDe kernel",
+        "linear8_simd",
+        &linear8_simd_torch,
+        "I-Whisper complete Linear8 SIMD kernel",
         pybind11::arg("x"),
         pybind11::arg("weight"),
         pybind11::arg("bias"),
@@ -42,7 +42,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         "linear8_requant_scalar_debug",
         &linear8_requant_scalar_debug_torch);
     m.def(
-        "linear8_accum_simde_debug",
-        &linear8_accum_simde_debug_torch,
-        "Linear8 SIMDe accumulator debug");
+        "linear8_accum_simd_debug",
+        &linear8_accum_simd_debug_torch,
+        "Linear8 simd accumulator debug");
 }
