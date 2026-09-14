@@ -30,7 +30,7 @@ define_macros = []
 compile_args = [
     "-O0",
     "-g",
-    "-std=c++17",
+    "-std=c++20",
 ]
 
 def get_cpu_features():

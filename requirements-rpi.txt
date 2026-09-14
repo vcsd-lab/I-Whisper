@@ -1,0 +1,8 @@
+librosa
+more_itertools
+numpy
+regex
+scipy
+tiktoken
+tqdm
+bitsandbytes

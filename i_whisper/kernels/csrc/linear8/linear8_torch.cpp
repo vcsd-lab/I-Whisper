@@ -1,6 +1,5 @@
 // linear8_torch.cpp
 
-#pragma once
 #include <torch/extension.h>
 
 #include "linear8_torch.h"
