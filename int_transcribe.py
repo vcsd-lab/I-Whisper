@@ -166,11 +166,11 @@ if torch.cuda.is_available():
 CKPT_PATH = os.path.join('CKPT', 'consolidated.int.'+args.model+'.pth')
 profiler_stream = LoggerStream(logger, logging.INFO)
 # @profile(stream=profiler_stream)
-def load_preproc():
-    PreProcessor = i_whisper.audio.PreProcessor(device="cpu", param_init=False)
-    PreProcessor.load_param()
-    return PreProcessor
-PreProcessor = load_preproc()
+# def load_preproc():
+#     PreProcessor = i_whisper.audio.PreProcessor(device="cpu", param_init=False)
+#     PreProcessor.load_param()
+#     return PreProcessor
+# PreProcessor = load_preproc()
 
 '''Load integer whisper model'''
 if args.device == 'cuda' and torch.cuda.is_available():
@@ -183,9 +183,12 @@ else:
     def load():
         return i_whisper.load_int_model(args.model, args.device)
     model = load()
-    model.pack_linear_weights()
 # Decoding options
 options = i_whisper.DecodingOptions(fp16=False, language="en")
+
+from i_whisper.modules.linear import set_linear8_backend
+set_linear8_backend(model, backend="check")  # set backend for Linear8 layers
+
 
 if args.test:
     '''Load audio dataset & ground truth'''
@@ -272,7 +275,8 @@ else:
     logger.info(f"Original Audio is cut into {len(audio_list)} 30-second clips")
     t1 = time.time()
     for idx, audio in enumerate(audio_list):
-        mel = PreProcessor.log_mel_spectrum(audio).to(model.device)
+        # mel = PreProcessor.log_mel_spectrum(audio).to(model.device)
+        mel = i_whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
         result = i_whisper.decode(model, mel, options)
         logger.info(f"clip {idx:>2d}: {result.text}")
     t2 = time.time()

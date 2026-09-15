@@ -3,6 +3,7 @@ from torch import nn
 from bitsandbytes.functional import int8_linear_matmul
 
 from .functional import Rshift
+from i_whisper.kernels import _C
 
 
 
@@ -12,24 +13,14 @@ class LinearBase(nn.Linear):
         in_features: int,
         out_features: int,
         bias: bool = True,
-        encoder: bool = False,
-        attn : bool = False,
-        cross_attn : bool = False,
-        mlp0: bool = False,
-        mlp2: bool = False,
         asym: bool = True,
-        debug: bool = False
+        backend="torch"
     ):
         '''inherit from nn.Linear'''
         super().__init__(in_features, out_features, bias)
         '''meta parameters'''
-        self.encoder = encoder          # if this linear layer is in transformer encoder
-        self.attn = attn                # if this linear layer is in attention module
-        self.cross_attn = cross_attn    # if this linear layer is in cross-attention module
-        self.mlp0 = mlp0                # if this linear layer is in MLP 1st layer
-        self.mlp2 = mlp2                # if this linear layer is in MLP 2nd layer
+        self.backend = backend          # backend for computation
         self.asym = asym                # if use asymmetric quantization for weights
-        self.debug = debug              # debug flag
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_range = 127    # Signed, 2**(self.act_bit-1)-1
@@ -57,11 +48,37 @@ class Linear8(LinearBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         "integer inference (all int computation)"
         assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
+
+        if self.backend == "torch":
+            return self._forward_torch(x)
+
+        if self.backend == "scalar":
+            return _C.linear8_scalar(
+                x, self.weight, self.bias,
+                self.wgt_zeros, self.req_multiplier, self.req_shiftmount
+                )
+
+        if self.backend == "simd":
+            return _C.linear8_simd(
+                x, self.weight, self.bias,
+                self.wgt_zeros, self.req_multiplier, self.req_shiftmount
+                )
+
+        if self.backend == "check":
+            ref = self._forward_torch(x)
+            simd = _C.linear8_simd(
+                x, self.weight, self.bias,
+                self.wgt_zeros, self.req_multiplier, self.req_shiftmount
+                )
+            assert torch.equal(ref, simd), "SIMD backend result does not match reference!"
+            return ref
+        
+    
+    def _forward_torch(self, x: torch.Tensor) -> torch.Tensor:
+        "integer inference (all int computation)"
+        assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
         '''INT8xINT8 --> INT32 MatMul'''
-        if x.device.type == 'cuda':
-            out = int8_linear_matmul(x.contiguous(), self.weight.contiguous())
-        else: # using cpu
-            out = torch.matmul(x.int(), self.weight.int().t())
+        out = torch.matmul(x.int(), self.weight.int().t())
         
         if self.bias is not None:
             '''bias addition'''
@@ -74,8 +91,9 @@ class Linear8(LinearBase):
         '''Re-Quantization'''
         out = (out.long().mul(self.req_multiplier.long())>>32).int() # MULH
         out = Rshift(out, self.req_shiftmount)
-        out = out.clamp(min=-2**7+1,max=2**7-1).to(torch.int8)
+        out = out.clamp(min=-127,max=127).to(torch.int8)
         return out
+    
     
     @staticmethod
     def copy_param(quant_linear):
@@ -114,7 +132,7 @@ class Linear32(LinearBase):
         
 
         out = (out.long().mul(self.req_multiplier.long())>>32).int() # MULH
-        out = (out << self.req_shiftmount).clamp(min=-2**31+1,max=2**31-1).to(torch.int32)
+        out = (out << self.req_shiftmount).clamp(min=-2147483647,max=2147483647).to(torch.int32)
 
         return out
     
@@ -129,3 +147,9 @@ class Linear32(LinearBase):
         if quant_linear.asym:
             new_linear.wgt_zeros.data = quant_linear.wgt_zeros.data.clone().detach()
         return new_linear
+
+
+def set_linear8_backend(model, backend):
+    for module in model.modules():
+        if isinstance(module, Linear8):
+            module.backend = backend
