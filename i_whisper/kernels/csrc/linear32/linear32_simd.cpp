@@ -149,6 +149,21 @@ static inline int32_t row_sum_simd(
     return sum;
 }
 
+static inline int32_t left_shift_wrap_s32(
+    int32_t value,
+    uint32_t shift)
+{
+    if (shift >= 32)
+    {
+        return 0;
+    }
+
+    const uint32_t bits =
+        static_cast<uint32_t>(value);
+
+    return static_cast<int32_t>(
+        bits << shift);
+}
 
 static inline int32_t requant32(
     int32_t input,
@@ -159,15 +174,21 @@ static inline int32_t requant32(
         fixedpoint::mulh(
             input,
             multiplier);
+    
+    return left_shift_wrap_s32(
+        scaled,
+        static_cast<uint32_t>(shift));
 
-    const int64_t widened =
-        static_cast<int64_t>(scaled);
+    // const int64_t widened =
+    //     static_cast<int64_t>(scaled);
 
-    const int64_t shifted =
-        widened * (int64_t{1} << shift);
+    // const int64_t shifted =
+    //     widened * (int64_t{1} << shift);
 
-    return static_cast<int32_t>(shifted);
+    // return static_cast<int32_t>(shifted);
 }
+
+
 
 
 void linear32_simd(

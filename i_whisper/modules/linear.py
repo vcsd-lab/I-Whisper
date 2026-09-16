@@ -116,6 +116,34 @@ class Linear32(LinearBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         "integer inference (all int computation)"
         assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
+
+        if self.backend == "torch":
+            return self._forward_torch(x)
+
+        if self.backend == "scalar":
+            return _C.linear32_scalar(
+                x, self.weight, self.bias,
+                self.wgt_zeros, self.req_multiplier, self.req_shiftmount
+                )
+
+        if self.backend == "simd":
+            return _C.linear32_simd(
+                x, self.weight, self.bias,
+                self.wgt_zeros, self.req_multiplier, self.req_shiftmount
+                )
+
+        if self.backend == "check":
+            ref = self._forward_torch(x)
+            simd = _C.linear32_simd(
+                x, self.weight, self.bias,
+                self.wgt_zeros, self.req_multiplier, self.req_shiftmount
+                )
+            assert torch.equal(ref, simd), "SIMD backend result does not match reference!"
+            return ref
+        
+    def _forward_torch(self, x: torch.Tensor) -> torch.Tensor:
+        "integer inference (all int computation)"
+        assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
         '''INT8xINT8 --> INT32 MatMul'''
         if x.device.type == 'cuda':
             out = int8_linear_matmul(x.contiguous(), self.weight.contiguous())
@@ -172,4 +200,9 @@ class Linear32(LinearBase):
 def set_linear8_backend(model, backend):
     for module in model.modules():
         if isinstance(module, Linear8):
+            module.backend = backend
+
+def set_linear32_backend(model, backend):
+    for module in model.modules():
+        if isinstance(module, Linear32):
             module.backend = backend
