@@ -22,6 +22,9 @@ sources = [
     str(CSRC / "linear8" / "linear8_torch.cpp"),
     str(CSRC / "linear8" / "linear8_scalar.cpp"),
     str(CSRC / "linear8" / "linear8_simd.cpp"),
+    str(CSRC / "linear32" / "linear32_torch.cpp"),
+    str(CSRC / "linear32" / "linear32_scalar.cpp"),
+    str(CSRC / "linear32" / "linear32_simd.cpp"),
 ]
 
 include_dirs = []

@@ -2,83 +2,14 @@
 
 #include <torch/extension.h>
 
+#include "../common/checktensor.h"
+#include "../common/backend.h"
 #include "linear8_torch.h"
 #include "linear8.h"
 
 #include <string>
 
-enum class Linear8Backend
-{
-    Scalar,
-    SIMD
-};
 
-static inline void CHECK_CPU_INT8(
-    const torch::Tensor &tensor,
-    const std::string &name)
-{
-    TORCH_CHECK(
-        tensor.device().is_cpu(),
-        name + " must be a CPU tensor, got device " + tensor.device().str());
-
-    TORCH_CHECK(
-        tensor.scalar_type() == torch::kInt8,
-        name + " must be int8, got " + std::to_string(static_cast<int>(tensor.scalar_type())));
-
-    TORCH_CHECK(
-        tensor.is_contiguous(),
-        name + " must be contiguous");
-}
-
-static inline void CHECK_CPU_UINT8(
-    const torch::Tensor &tensor,
-    const std::string &name)
-{
-    TORCH_CHECK(
-        tensor.device().is_cpu(),
-        name + " must be a CPU tensor, got device " + tensor.device().str());
-    TORCH_CHECK(
-        tensor.scalar_type() == torch::kUInt8,
-        name + " must be uint8, got " + std::to_string(static_cast<int>(tensor.scalar_type())));
-
-    TORCH_CHECK(
-        tensor.is_contiguous(),
-        name + " must be contiguous");
-}
-
-static inline void CHECK_CPU_INT32(
-    const torch::Tensor &tensor,
-    const std::string &name)
-{
-    TORCH_CHECK(
-        tensor.device().is_cpu(),
-        name + " must be a CPU tensor, got device " + tensor.device().str());
-
-    TORCH_CHECK(
-        tensor.scalar_type() == torch::kInt32,
-        name + " must be int32, got " + std::to_string(static_cast<int>(tensor.scalar_type())));
-
-    TORCH_CHECK(
-        tensor.is_contiguous(),
-        name + " must be contiguous");
-}
-
-static inline void CHECK_CPU_UINT32(
-    const torch::Tensor &tensor,
-    const std::string &name)
-{
-    TORCH_CHECK(
-        tensor.device().is_cpu(),
-        name + " must be a CPU tensor, got device " + tensor.device().str());
-
-    TORCH_CHECK(
-        tensor.scalar_type() == torch::kUInt32,
-        name + " must be uint32, got " + std::to_string(static_cast<int>(tensor.scalar_type())));
-
-    TORCH_CHECK(
-        tensor.is_contiguous(),
-        name + " must be contiguous");
-}
 
 static torch::Tensor linear8_torch_impl(
     const torch::Tensor &x,
@@ -87,19 +18,15 @@ static torch::Tensor linear8_torch_impl(
     const std::optional<torch::Tensor> &weight_zero,
     const torch::Tensor &multiplier,
     const torch::Tensor &shift,
-    Linear8Backend backend)
+    iwhisper::backend::ArmBackend backend)
 {
     // --------------------------------
     // CHECK: Input types requirements
     // --------------------------------
-    CHECK_CPU_INT8(x, "x");
-    CHECK_CPU_INT8(weight, "weight");
-    CHECK_CPU_UINT32(multiplier, "multiplier");
-    CHECK_CPU_INT8(shift, "shift");
-
-    const int64_t K = x.size(-1);
-    const int64_t N = weight.size(0);
-    const int64_t M = x.numel() / K;
+    iwhisper::checktensor::CHECK_CPU_INT8(x, "x");
+    iwhisper::checktensor::CHECK_CPU_INT8(weight, "weight");
+    iwhisper::checktensor::CHECK_CPU_UINT32(multiplier, "multiplier");
+    iwhisper::checktensor::CHECK_CPU_INT8(shift, "shift");
 
     // --------------------------------
     // CHECK: Basic shape requirements
@@ -108,6 +35,10 @@ static torch::Tensor linear8_torch_impl(
     TORCH_CHECK(weight.dim() == 2, "weight must have 2 dimensions, got " + std::to_string(weight.dim()));
     TORCH_CHECK(multiplier.dim() == 1, "multiplier should be a 1D tensor, got " + std::to_string(multiplier.dim()));
     TORCH_CHECK(shift.dim() == 1, "shift should be a 1D tensor, got " + std::to_string(shift.dim()));
+    const int64_t K = x.size(-1);
+    TORCH_CHECK(K > 0, "x.size(-1) must be greater than 0");
+    const int64_t N = weight.size(0);
+    const int64_t M = x.numel() / K;
 
     // --------------------------------
     // CHECK: Shape compatibility
@@ -153,7 +84,7 @@ static torch::Tensor linear8_torch_impl(
     {
         const torch::Tensor &b = bias.value();
 
-        CHECK_CPU_INT32(b, "bias"); // dtype & device check
+        iwhisper::checktensor::CHECK_CPU_INT32(b, "bias"); // dtype & device check
         TORCH_CHECK(b.dim() == 1, "bias must be a 1D tensor, got " + std::to_string(b.dim()));
         TORCH_CHECK(b.size(0) == N, "bias.size(0) must equal weight.size(0), got " + std::to_string(b.size(0)) + " expected " + std::to_string(N));
 
@@ -172,7 +103,7 @@ static torch::Tensor linear8_torch_impl(
     {
         const torch::Tensor &zero = weight_zero.value();
 
-        CHECK_CPU_INT8(zero, "weight_zero"); // dtype & device check
+        iwhisper::checktensor::CHECK_CPU_INT8(zero, "weight_zero"); // dtype & device check
         TORCH_CHECK(zero.dim() == 1, "weight_zero must be a 1D tensor, got " + std::to_string(zero.dim()));
         TORCH_CHECK(zero.size(0) == N, "weight_zero.size(0) must equal weight.size(0), got " + std::to_string(zero.size(0)) + " expected " + std::to_string(N));
 
@@ -184,7 +115,7 @@ static torch::Tensor linear8_torch_impl(
     // --------------------------------
     switch (backend)
     {
-    case Linear8Backend::Scalar:
+    case iwhisper::backend::ArmBackend::Scalar:
         iwhisper::linear8_scalar(
             x_ptr,
             weight_ptr,
@@ -200,7 +131,7 @@ static torch::Tensor linear8_torch_impl(
             has_zero);
         break;
 
-    case Linear8Backend::SIMD:
+    case iwhisper::backend::ArmBackend::SIMD:
         iwhisper::linear8_simd(
             x_ptr,
             weight_ptr,
@@ -235,7 +166,7 @@ torch::Tensor linear8_scalar_torch(
         weight_zero,
         multiplier,
         shift,
-        Linear8Backend::Scalar);
+        iwhisper::backend::ArmBackend::Scalar);
 }
 
 torch::Tensor linear8_simd_torch(
@@ -253,7 +184,7 @@ torch::Tensor linear8_simd_torch(
         weight_zero,
         multiplier,
         shift,
-        Linear8Backend::SIMD);
+        iwhisper::backend::ArmBackend::SIMD);
 }
 
 
@@ -263,24 +194,20 @@ static torch::Tensor linear8_accum_debug_torch_impl(
     const torch::Tensor &weight,
     const std::optional<torch::Tensor> &bias,
     const std::optional<torch::Tensor> &weight_zero,
-    Linear8Backend backend)
+    iwhisper::backend::ArmBackend backend)
 {
-    CHECK_CPU_INT8(x, "x");
-    CHECK_CPU_INT8(weight, "weight");
+    iwhisper::checktensor::CHECK_CPU_INT8(x, "x");
+    iwhisper::checktensor::CHECK_CPU_INT8(weight, "weight");
 
-    const int64_t K = x.size(-1);
-    const int64_t N = weight.size(0);
-    const int64_t M = x.numel() / K;
 
-    /**
-     * x:      [*, K]
-     * weight: [N, K]
-     * bias:   [N] or None
-     * output: [*, N]
-     */
     TORCH_CHECK(x.dim() >= 1, "x must have at least one dimension");
+    const int64_t K = x.size(-1);
+    TORCH_CHECK(K > 0, "x.size(-1) must be greater than 0, got " + std::to_string(K));
+
     TORCH_CHECK(weight.dim() == 2, "weight must have shape [N, K], got " + std::to_string(weight.dim()));
     TORCH_CHECK(weight.size(1) == K, "weight.size(1) must equal x.size(-1), got " + std::to_string(weight.size(1)) + " expected " + std::to_string(K));
+    const int64_t N = weight.size(0);
+    const int64_t M = x.numel() / K;
 
     // --------------------------------
     // Allocate output (int32_t)
@@ -315,7 +242,7 @@ static torch::Tensor linear8_accum_debug_torch_impl(
     {
         const torch::Tensor &b = bias.value();
 
-        CHECK_CPU_INT32(b, "bias"); // dtype & device check
+        iwhisper::checktensor::CHECK_CPU_INT32(b, "bias"); // dtype & device check
         TORCH_CHECK(b.dim() == 1, "bias must be a 1D tensor, got " + std::to_string(b.dim()));
         TORCH_CHECK(b.size(0) == N, "bias.size(0) must equal weight.size(0), got " + std::to_string(b.size(0)) + " expected " + std::to_string(N));
 
@@ -334,7 +261,7 @@ static torch::Tensor linear8_accum_debug_torch_impl(
     {
         const torch::Tensor &zero = weight_zero.value();
 
-        CHECK_CPU_INT8(zero, "weight_zero"); // dtype & device check
+        iwhisper::checktensor::CHECK_CPU_INT8(zero, "weight_zero"); // dtype & device check
         TORCH_CHECK(zero.dim() == 1, "weight_zero must be a 1D tensor, got " + std::to_string(zero.dim()));
         TORCH_CHECK(zero.size(0) == N, "weight_zero.size(0) must equal weight.size(0), got " + std::to_string(zero.size(0)) + " expected " + std::to_string(N));
 
@@ -343,7 +270,7 @@ static torch::Tensor linear8_accum_debug_torch_impl(
 
     switch (backend)
     {
-    case Linear8Backend::Scalar:
+    case iwhisper::backend::ArmBackend::Scalar:
         iwhisper::linear8_accum_scalar(
             x_ptr,
             weight_ptr,
@@ -357,7 +284,7 @@ static torch::Tensor linear8_accum_debug_torch_impl(
             asymmetric);
         break;
 
-    case Linear8Backend::SIMD:
+    case iwhisper::backend::ArmBackend::SIMD:
         iwhisper::linear8_accum_simd(
             x_ptr,
             weight_ptr,
@@ -390,7 +317,7 @@ torch::Tensor linear8_accum_scalar_debug_torch(
         weight,
         bias,
         weight_zero,
-        Linear8Backend::Scalar);
+        iwhisper::backend::ArmBackend::Scalar);
 }
 torch::Tensor linear8_accum_simd_debug_torch(
     const torch::Tensor &x,
@@ -403,7 +330,7 @@ torch::Tensor linear8_accum_simd_debug_torch(
         weight,
         bias,
         weight_zero,
-        Linear8Backend::SIMD);
+        iwhisper::backend::ArmBackend::SIMD);
 }
 
 torch::Tensor linear8_requant_scalar_debug_torch(
@@ -414,9 +341,9 @@ torch::Tensor linear8_requant_scalar_debug_torch(
     // --------------------------------
     // CHECK: Input types requirements
     // --------------------------------
-    CHECK_CPU_INT32(input, "input");
-    CHECK_CPU_UINT32(multiplier, "multiplier");
-    CHECK_CPU_INT8(shift, "shift");
+    iwhisper::checktensor::CHECK_CPU_INT32(input, "input");
+    iwhisper::checktensor::CHECK_CPU_UINT32(multiplier, "multiplier");
+    iwhisper::checktensor::CHECK_CPU_INT8(shift, "shift");
 
     // --------------------------------
     // CHECK: Basic shape requirements

@@ -3,6 +3,7 @@
 #include <string>
 
 #include "linear8/linear8_torch.h"
+#include "linear32/linear32_torch.h"
 
 std::string hello()
 {
@@ -45,4 +46,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         "linear8_accum_simd_debug",
         &linear8_accum_simd_debug_torch,
         "Linear8 simd accumulator debug");
+
+    m.def(
+        "linear32_scalar",
+        &linear32_scalar_torch,
+        "I-Whisper complete Linear32 scalar kernel",
+        pybind11::arg("x"),
+        pybind11::arg("weight"),
+        pybind11::arg("bias"),
+        pybind11::arg("weight_zero"),
+        pybind11::arg("multiplier"),
+        pybind11::arg("shift"));
+    m.def(
+        "linear32_accum_scalar_debug",
+        &linear32_accum_scalar_debug_torch,
+        "Linear32 scalar accumulator debug");
+    m.def(
+        "linear32_requant_scalar_debug",
+        &linear32_requant_scalar_debug_torch,
+        "Linear32 requantization debug");
 }

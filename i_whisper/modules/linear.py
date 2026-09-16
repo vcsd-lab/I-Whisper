@@ -132,7 +132,27 @@ class Linear32(LinearBase):
         
 
         out = (out.long().mul(self.req_multiplier.long())>>32).int() # MULH
-        out = (out << self.req_shiftmount).clamp(min=-2147483647,max=2147483647).to(torch.int32)
+        # out = (out << self.req_shiftmount).clamp(min=-2147483647,max=2147483647).to(torch.int32)
+        
+        # debug only
+        shifted64 = (
+            out.long()
+            << self.req_shiftmount.long()
+        )
+
+        overflow_count = (
+            (shifted64 > torch.iinfo(torch.int32).max) |
+            (shifted64 < torch.iinfo(torch.int32).min)
+        ).sum()
+
+        if overflow_count:
+            print(
+                "[Linear32 shift overflow]",
+                "count =", overflow_count.item(),
+                "min =", shifted64.min().item(),
+                "max =", shifted64.max().item(),
+            )
+        out = (out << self.req_shiftmount).to(torch.int32)
 
         return out
     
