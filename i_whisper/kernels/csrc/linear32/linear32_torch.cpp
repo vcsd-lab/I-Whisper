@@ -127,21 +127,21 @@ static torch::Tensor linear32_torch_impl(
             has_zero);
         break;
 
-        // case iwhisper::backend::ArmBackend::SIMD:
-        //     iwhisper::linear32_simd(
-        //         x_ptr,
-        //         weight_ptr,
-        //         bias_ptr,
-        //         weight_zero_ptr,
-        //         multiplier_ptr,
-        //         shift_ptr,
-        //         output_ptr,
-        //         M,
-        //         K,
-        //         N,
-        //         has_bias,
-        //         has_zero);
-        //     break;
+    case iwhisper::backend::ArmBackend::SIMD:
+        iwhisper::linear32_simd(
+            x_ptr,
+            weight_ptr,
+            bias_ptr,
+            weight_zero_ptr,
+            multiplier_ptr,
+            shift_ptr,
+            output_ptr,
+            M,
+            K,
+            N,
+            has_bias,
+            has_zero);
+        break;
     }
 
     return output;
@@ -163,6 +163,24 @@ torch::Tensor linear32_scalar_torch(
         multiplier,
         shift,
         iwhisper::backend::ArmBackend::Scalar);
+}
+
+torch::Tensor linear32_simd_torch(
+    const torch::Tensor &x,
+    const torch::Tensor &weight,
+    const std::optional<torch::Tensor> &bias,
+    const std::optional<torch::Tensor> &weight_zero,
+    const torch::Tensor &multiplier,
+    const torch::Tensor &shift)
+{
+    return linear32_torch_impl(
+        x,
+        weight,
+        bias,
+        weight_zero,
+        multiplier,
+        shift,
+        iwhisper::backend::ArmBackend::SIMD);
 }
 
 static torch::Tensor linear32_accum_debug_torch_impl(
@@ -259,19 +277,19 @@ static torch::Tensor linear32_accum_debug_torch_impl(
             asymmetric);
         break;
 
-        // case iwhisper::backend::ArmBackend::SIMD:
-        //     iwhisper::linear32_accum_simd(
-        //         x_ptr,
-        //         weight_ptr,
-        //         bias_ptr,
-        //         weight_zero_ptr,
-        //         output_ptr,
-        //         M,
-        //         K,
-        //         N,
-        //         has_bias,
-        //         asymmetric);
-        //     break;
+    case iwhisper::backend::ArmBackend::SIMD:
+        iwhisper::linear32_accum_simd(
+            x_ptr,
+            weight_ptr,
+            bias_ptr,
+            weight_zero_ptr,
+            output_ptr,
+            M,
+            K,
+            N,
+            has_bias,
+            asymmetric);
+        break;
     }
 
     return output;
@@ -289,6 +307,20 @@ torch::Tensor linear32_accum_scalar_debug_torch(
         bias,
         weight_zero,
         iwhisper::backend::ArmBackend::Scalar);
+}
+
+torch::Tensor linear32_accum_simd_debug_torch(
+    const torch::Tensor &x,
+    const torch::Tensor &weight,
+    const std::optional<torch::Tensor> &bias,
+    const std::optional<torch::Tensor> &weight_zero)
+{
+    return linear32_accum_debug_torch_impl(
+        x,
+        weight,
+        bias,
+        weight_zero,
+        iwhisper::backend::ArmBackend::SIMD);
 }
 
 torch::Tensor linear32_requant_scalar_debug_torch(

@@ -474,3 +474,147 @@ def test_linear32_scalar_complete_random(
     assert y.dtype == torch.int32
     assert y.shape == (M, N)
     assert torch.equal(y, expected)
+    
+def test_linear32_scalar_complete_3d():
+    torch.manual_seed(11)
+
+    B = 2
+    M = 5
+    K = 11
+    N = 13
+
+    x = torch.randint(
+        -128,
+        128,
+        (B, M, K),
+        dtype=torch.int8,
+    )
+
+    weight = torch.randint(
+        -128,
+        128,
+        (N, K),
+        dtype=torch.int8,
+    )
+
+    bias = torch.randint(
+        -100000,
+        100000,
+        (N,),
+        dtype=torch.int32,
+    )
+
+    weight_zero = torch.randint(
+        -128,
+        128,
+        (N,),
+        dtype=torch.int8,
+    )
+
+    multiplier = torch.randint(
+        1 << 30,
+        1 << 32,
+        (N,),
+        dtype=torch.int64,
+    ).to(torch.uint32)
+
+    shift = torch.randint(
+        0,
+        8,
+        (N,),
+        dtype=torch.int8,
+    )
+
+    y = _C.linear32_scalar(
+        x,
+        weight,
+        bias,
+        weight_zero,
+        multiplier,
+        shift,
+    )
+
+    accum_expected = linear32_accum_ref(
+        x,
+        weight,
+        bias=bias,
+        weight_zero=weight_zero,
+    )
+
+    expected = linear32_requant_ref(
+        accum_expected,
+        multiplier,
+        shift,
+    )
+
+    assert y.shape == (B, M, N)
+    assert y.dtype == torch.int32
+    assert torch.equal(y, expected)
+    
+def test_linear32_scalar_matches_debug_composition():
+    torch.manual_seed(12)
+
+    M = 7
+    K = 11
+    N = 13
+
+    x = torch.randint(
+        -128, 128,
+        (M, K),
+        dtype=torch.int8,
+    )
+
+    weight = torch.randint(
+        -128, 128,
+        (N, K),
+        dtype=torch.int8,
+    )
+
+    bias = torch.randint(
+        -100000, 100000,
+        (N,),
+        dtype=torch.int32,
+    )
+
+    weight_zero = torch.randint(
+        -128, 128,
+        (N,),
+        dtype=torch.int8,
+    )
+
+    multiplier = torch.randint(
+        1 << 30,
+        1 << 32,
+        (N,),
+        dtype=torch.int64,
+    ).to(torch.uint32)
+
+    shift = torch.randint(
+        0, 8,
+        (N,),
+        dtype=torch.int8,
+    )
+
+    full = _C.linear32_scalar(
+        x,
+        weight,
+        bias,
+        weight_zero,
+        multiplier,
+        shift,
+    )
+
+    accum = _C.linear32_accum_scalar_debug(
+        x,
+        weight,
+        bias,
+        weight_zero,
+    )
+
+    composed = _C.linear32_requant_scalar_debug(
+        accum,
+        multiplier,
+        shift,
+    )
+
+    assert torch.equal(full, composed)
