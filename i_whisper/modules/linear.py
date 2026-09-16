@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 from bitsandbytes.functional import int8_linear_matmul
+from typing import Optional
+from logging import Logger
 
 from .functional import Rshift
 from i_whisper.kernels import _C
@@ -197,12 +199,56 @@ class Linear32(LinearBase):
         return new_linear
 
 
-def set_linear8_backend(model, backend):
-    for module in model.modules():
-        if isinstance(module, Linear8):
-            module.backend = backend
+def set_linear8_backend(
+    model: nn.Module,
+    backend: str,
+    logger: Optional[Logger] = None,
+):
+    """
+    Set the backend for residual connections in the model.
+    """
+    assert backend in ["torch", "simd", "scalar", "check"], \
+        f"Invalid backend: {backend}"
 
-def set_linear32_backend(model, backend):
-    for module in model.modules():
-        if isinstance(module, Linear32):
-            module.backend = backend
+    log = logger.debug if logger is not None else print
+
+    for name, layer in model.named_modules():
+        if isinstance(layer, Linear8):
+            if layer.backend == backend:
+                log(
+                    f"linear8 backend for {name} "
+                    f"is already set to {backend}."
+                )
+            else:
+                log(
+                    f"linear8 backend for {name} "
+                    f"from {layer.backend} to {backend}."
+                )
+                layer.backend = backend
+
+def set_linear32_backend(
+    model: nn.Module,
+    backend: str,
+    logger: Optional[Logger] = None
+):
+    """
+    Set the backend for residual connections in the model.
+    """
+    assert backend in ["torch", "simd", "scalar", "check"], \
+        f"Invalid backend: {backend}"
+        
+    log = logger.debug if logger is not None else print
+    
+    for name, layer in model.named_modules():
+        if isinstance(layer, Linear32):
+            if layer.backend == backend:
+                log(
+                    f"linear32 backend for {name} "
+                    f"is already set to {backend}."
+                )
+            else:
+                log(
+                    f"linear32 backend for {name} "
+                    f"from {layer.backend} to {backend}."
+                )
+                layer.backend = backend

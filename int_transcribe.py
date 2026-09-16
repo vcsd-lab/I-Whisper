@@ -19,7 +19,6 @@ import random
 import jiwer
 from i_whisper.model import ResidualAttentionBlock
 from i_whisper.model_quant import ResidualAttentionBlock_quantized, LayerNorm_quantized, Linear_quantized, GELU_quantized
-from i_whisper.model_int import Build_from_Quant
 
 import re
 class Expand(jiwer.AbstractTransform):
@@ -187,8 +186,11 @@ else:
 options = i_whisper.DecodingOptions(fp16=False, language="en")
 
 from i_whisper.modules.linear import set_linear8_backend, set_linear32_backend
-set_linear8_backend(model, backend="simd")  # set backend for Linear8 layers
-set_linear32_backend(model, backend="simd")  # set backend for Linear32 layers
+set_linear8_backend(model, backend="simd", logger=logger)  # set backend for Linear8 layers
+set_linear32_backend(model, backend="simd", logger=logger)  # set backend for Linear32 layers
+
+from i_whisper.model_int import set_residual_backend
+set_residual_backend(model, backend="simd", logger=logger)  # set backend for ResidualAttention
 
 
 if args.test:

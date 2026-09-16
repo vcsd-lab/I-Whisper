@@ -24,13 +24,11 @@ from .modules.functional import (
     Fast_Inverse_Square_Root,
     Batch_Head_s8s8s32_GeMM,
     Batch_Head_u8s8s32_GeMM,
-    int_bit_length,
-    build_rsqrt_lut,
-    LUT_Based_Inverse_Square_Root
+    int_bit_length
 )
+from i_whisper.kernels import _C
 
 import matplotlib.pyplot as plt
-import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 
@@ -43,8 +41,7 @@ __all__ = [
     "ResidualAttentionBlock_int",
     "AudioEncoder_int",
     "TextDecoder_int",
-    "Whisper_int",
-    "Build_from_Quant"
+    "Whisper_int"
     ]
 
 
@@ -513,11 +510,13 @@ class ResidualAttentionBlock_int(nn.Module):
         n_state: int,
         n_head: int,
         cross_attention: bool = False,
+        backend = "torch"
     ):
         '''inherit from nn.Module'''
         super().__init__()
 
         '''meta parameters'''
+        self.backend = backend
 
         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
         self.act_attn_bit = 15
@@ -567,9 +566,17 @@ class ResidualAttentionBlock_int(nn.Module):
         module_inout = self.attn(module_inout, mask=mask, kv_cache=kv_cache)
 
         '''Residual connection with/without quantization'''
-        x = x.int().mul(self.attn_res_req_multiplier.int())
-        x = Rshift(module_inout + x, 15)
-        x = x.clamp(-self.act_attn_range, self.act_attn_range).to(torch.int16)
+        if self.backend == "torch":
+            x = self._residual15_torch(module_inout, x, self.attn_res_req_multiplier)
+        elif self.backend == "simd":
+            x = _C.residual15_simd(module_inout, x, self.attn_res_req_multiplier)
+        elif self.backend == "scalar":
+            x = _C.residual15_scalar(module_inout, x, self.attn_res_req_multiplier)
+        elif self.backend == "check":
+            x_check = self._residual15_torch(module_inout, x, self.attn_res_req_multiplier)
+            x = _C.residual15_simd(module_inout, x, self.attn_res_req_multiplier)
+            assert torch.equal(x, x_check), "Residual connection mismatch between simd and torch!"
+
 
         '''if exists Cross-Attention Module, compute Cross-Attention'''
         if self.cross_attn:
@@ -581,9 +588,16 @@ class ResidualAttentionBlock_int(nn.Module):
             module_inout = self.cross_attn(module_inout, xa, kv_cache=kv_cache)
 
             '''Residual connection with/without quantization'''
-            x = x.int().mul(self.cross_attn_res_req_multiplier.int())
-            x = Rshift(module_inout + x, 15)
-            x = x.clamp(-self.act_cross_attn_range, self.act_cross_attn_range).to(torch.int16)
+            if self.backend == "torch":
+                x = self._residual15_torch(module_inout, x, self.cross_attn_res_req_multiplier)
+            elif self.backend == "simd":
+                x = _C.residual15_simd(module_inout, x, self.cross_attn_res_req_multiplier)
+            elif self.backend == "scalar":
+                x = _C.residual15_scalar(module_inout, x, self.cross_attn_res_req_multiplier)
+            elif self.backend == "check":
+                x_check = self._residual15_torch(module_inout, x, self.cross_attn_res_req_multiplier)
+                x = _C.residual15_simd(module_inout, x, self.cross_attn_res_req_multiplier)
+                assert torch.equal(x, x_check), "Residual connection mismatch between simd and torch!"
 
         '''Compute LayerNorm, and LayerNorm returns both normalized output and non-quantized/quantized input'''
         module_inout = self.mlp_ln(x)[0]
@@ -592,12 +606,28 @@ class ResidualAttentionBlock_int(nn.Module):
         module_inout = self.mlp(module_inout)
         
         '''Residual connection with/without quantization'''
-        x = x.int().mul(self.mlp_res_req_multiplier.int())
-        x = Rshift(module_inout + x, 15)
-        x = x.clamp(-self.act_mlp_range, self.act_mlp_range).to(torch.int16)
-
+        if self.backend == "torch":
+            x = self._residual15_torch(module_inout, x, self.mlp_res_req_multiplier)
+        elif self.backend == "simd":
+            x = _C.residual15_simd(module_inout, x, self.mlp_res_req_multiplier)
+        elif self.backend == "scalar":
+            x = _C.residual15_scalar(module_inout, x, self.mlp_res_req_multiplier)
+        elif self.backend == "check":
+            x_check = self._residual15_torch(module_inout, x, self.mlp_res_req_multiplier)
+            x = _C.residual15_simd(module_inout, x, self.mlp_res_req_multiplier)
+            assert torch.equal(x, x_check), "Residual connection mismatch between simd and torch!"
 
         return x
+    
+    
+    def _residual15_torch(self, branch: Tensor, residual: Tensor, req_multiplier: Tensor) -> Tensor:
+        assert branch.dtype == torch.int32, "branch tensor must be int32 in integer inference mode!"
+        assert residual.dtype == torch.int16, "residual tensor must be int16 in integer inference mode!"
+        residual = residual.int().mul(req_multiplier.int())
+        branch = Rshift(branch + residual, 15)
+        return branch.clamp(-16383, 16383).to(torch.int16)
+    
+    
     
     @staticmethod
     def copy_param(quant_layer):
@@ -953,15 +983,29 @@ class Whisper_int(nn.Module):
 
 
 
-def Build_from_Quant(Orig)->Whisper_int:
-    '''Build integer inference model from quantized model'''
-    assert Orig.quantize, "Input model is not quantized model!"
-    result = Orig.convert_to_int_mode()
-    assert result, "Convert to integer inference model failed!"
-    Model_int = Whisper_int(Orig.dims)
+def set_residual_backend(
+    model: Whisper_int,
+    backend: str,
+    logger: Optional[Logger] = None,
+):
+    """
+    Set the backend for residual connections in the model.
+    """
+    assert backend in ["torch", "simd", "scalar", "check"], \
+        f"Invalid backend: {backend}"
 
-    result = Model_int.load_state_dict(Orig.state_dict(), strict=False)
-    print("Missing keys not in CKPT: ", len(result.missing_keys), ", Showing 10: ", result.missing_keys[:10])
-    print("Unexpected keys in CKPT: ", len(result.unexpected_keys), ", Showing 10: ", result.unexpected_keys[:10])
+    log = logger.debug if logger is not None else print
 
-    return Model_int
+    for name, layer in model.named_modules():
+        if isinstance(layer, ResidualAttentionBlock_int):
+            if layer.backend == backend:
+                log(
+                    f"Residual backend for {name} "
+                    f"is already set to {backend}."
+                )
+            else:
+                layer.backend = backend
+                log(
+                    f"Residual backend for {name} "
+                    f"from {layer.backend} to {backend}."
+                )

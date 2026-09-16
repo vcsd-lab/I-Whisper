@@ -27,6 +27,7 @@ sources = [
     str(CSRC / "linear32" / "linear32_simd.cpp"),
     str(CSRC / "residual15" / "residual15_torch.cpp"),
     str(CSRC / "residual15" / "residual15_scalar.cpp"),
+    str(CSRC / "residual15" / "residual15_simd.cpp"),
 ]
 
 include_dirs = []

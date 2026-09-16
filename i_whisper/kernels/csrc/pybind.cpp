@@ -89,4 +89,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         pybind11::arg("branch"),
         pybind11::arg("residual"),
         pybind11::arg("multiplier"));
+    m.def(
+        "residual15_simd",
+        &residual15_simd_torch,
+        "I-Whisper complete Residual15 SIMD kernel",
+        pybind11::arg("branch"),
+        pybind11::arg("residual"),
+        pybind11::arg("multiplier"));
 }

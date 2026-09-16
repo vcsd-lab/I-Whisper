@@ -7,13 +7,11 @@
 
 #include <torch/extension.h>
 
-
 torch::Tensor residual15_scalar_torch_impl(
     const torch::Tensor &branch,
     const torch::Tensor &residual,
     const torch::Tensor &multiplier,
-    iwhisper::backend::ArmBackend backend
-)
+    iwhisper::backend::ArmBackend backend)
 {
     // --------------------------------
     // CHECK: Input types requirements
@@ -27,8 +25,7 @@ torch::Tensor residual15_scalar_torch_impl(
     // --------------------------------
     TORCH_CHECK(
         multiplier.numel() == 1,
-        "multiplier must be a scalar tensor"
-    );
+        "multiplier must be a scalar tensor");
 
     // --------------------------------
     // CHECK: Shape compatibility
@@ -36,8 +33,7 @@ torch::Tensor residual15_scalar_torch_impl(
     const int64_t numel = branch.numel();
     TORCH_CHECK(
         residual.sizes() == branch.sizes(),
-        "branch and residual must have the same shape"
-    );
+        "branch and residual must have the same shape");
 
     const uint16_t multiplier_value = multiplier.data_ptr<uint16_t>()[0];
     // --------------------------------
@@ -45,43 +41,50 @@ torch::Tensor residual15_scalar_torch_impl(
     // --------------------------------
     auto output = torch::empty_like(residual);
 
-    switch(backend)
+    switch (backend)
     {
-        case iwhisper::backend::ArmBackend::Scalar:
-            iwhisper::residual15_scalar(
-                branch.data_ptr<int32_t>(),
-                residual.data_ptr<int16_t>(),
-                multiplier_value,
-                output.data_ptr<int16_t>(),
-                numel
-            );
-            break;
+    case iwhisper::backend::ArmBackend::Scalar:
+        iwhisper::residual15_scalar(
+            branch.data_ptr<int32_t>(),
+            residual.data_ptr<int16_t>(),
+            multiplier_value,
+            output.data_ptr<int16_t>(),
+            numel);
+        break;
 
-        // case iwhisper::backend::ArmBackend::SIMD:
-        //     iwhisper::residual15_simd(
-        //         branch.data_ptr<int32_t>(),
-        //         residual.data_ptr<int16_t>(),
-        //         multiplier.item<uint16_t>(),
-        //         output.data_ptr<int16_t>(),
-        //         numel
-        //     );
-        //     break;
+    case iwhisper::backend::ArmBackend::SIMD:
+        iwhisper::residual15_simd(
+            branch.data_ptr<int32_t>(),
+            residual.data_ptr<int16_t>(),
+            multiplier_value,
+            output.data_ptr<int16_t>(),
+            numel);
+        break;
     }
 
     return output;
 }
 
-
 torch::Tensor residual15_scalar_torch(
     const torch::Tensor &branch,
     const torch::Tensor &residual,
-    const torch::Tensor &multiplier
-)
+    const torch::Tensor &multiplier)
 {
     return residual15_scalar_torch_impl(
         branch,
         residual,
         multiplier,
-        iwhisper::backend::ArmBackend::Scalar
-    );
+        iwhisper::backend::ArmBackend::Scalar);
+}
+
+torch::Tensor residual15_simd_torch(
+    const torch::Tensor &branch,
+    const torch::Tensor &residual,
+    const torch::Tensor &multiplier)
+{
+    return residual15_scalar_torch_impl(
+        branch,
+        residual,
+        multiplier,
+        iwhisper::backend::ArmBackend::SIMD);
 }
