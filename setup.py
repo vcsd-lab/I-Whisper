@@ -25,6 +25,8 @@ sources = [
     str(CSRC / "linear32" / "linear32_torch.cpp"),
     str(CSRC / "linear32" / "linear32_scalar.cpp"),
     str(CSRC / "linear32" / "linear32_simd.cpp"),
+    str(CSRC / "residual15" / "residual15_torch.cpp"),
+    str(CSRC / "residual15" / "residual15_scalar.cpp"),
 ]
 
 include_dirs = []
@@ -33,7 +35,7 @@ define_macros = []
 
 build_type = os.environ.get(
     "IWHISPER_BUILD_TYPE",
-    "debug",
+    "release",
 ).lower()
 
 if build_type == "debug":
@@ -42,6 +44,9 @@ if build_type == "debug":
         "-g",
         "-std=c++20",
     ]
+    print(
+        "[I-Whisper] Build type: debug"
+    )
 
 elif build_type == "release":
     compile_args = [
@@ -49,6 +54,9 @@ elif build_type == "release":
         "-DNDEBUG",
         "-std=c++20",
     ]
+    print(
+        "[I-Whisper] Build type: release"
+    )
 
 else:
     raise RuntimeError(

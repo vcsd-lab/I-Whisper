@@ -188,7 +188,7 @@ options = i_whisper.DecodingOptions(fp16=False, language="en")
 
 from i_whisper.modules.linear import set_linear8_backend, set_linear32_backend
 set_linear8_backend(model, backend="simd")  # set backend for Linear8 layers
-set_linear32_backend(model, backend="torch")  # set backend for Linear32 layers
+set_linear32_backend(model, backend="simd")  # set backend for Linear32 layers
 
 
 if args.test:

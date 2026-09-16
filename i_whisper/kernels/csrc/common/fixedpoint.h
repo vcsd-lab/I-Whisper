@@ -40,9 +40,7 @@ inline int32_t mulh(
         static_cast<int64_t>(x)
         * static_cast<int64_t>(multiplier);
 
-    return static_cast<int32_t>(
-        arithmetic_rshift(product, 32)
-    );
+    return static_cast<int32_t>(product >> 32);
 }
 
 
@@ -55,20 +53,14 @@ inline int32_t rounding_rshift(
         return x;
     }
 
-    const int64_t rounding =
-        (int64_t{1} << (shift - 1))
+    const int32_t rounding =
+        (int32_t{1} << (shift - 1))
         - (x < 0 ? 1 : 0);
 
-    const int64_t value =
-        static_cast<int64_t>(x)
-        + rounding;
+    const int32_t value =
+        x + rounding;
 
-    return static_cast<int32_t>(
-        arithmetic_rshift(
-            value,
-            shift
-        )
-    );
+    return value >> shift;
 }
 
 

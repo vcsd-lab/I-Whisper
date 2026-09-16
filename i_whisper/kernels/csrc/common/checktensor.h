@@ -51,6 +51,51 @@ static inline void CHECK_CPU_UINT8(
         " must be contiguous");
 }
 
+
+static inline void CHECK_CPU_INT16(
+    const torch::Tensor &tensor,
+    const std::string &name)
+{
+    TORCH_CHECK(
+        tensor.device().is_cpu(),
+        name,
+        " must be a CPU tensor, got device ",
+        tensor.device().str());
+
+    TORCH_CHECK(
+        tensor.scalar_type() == torch::kInt16,
+        name,
+        " must be int16, got ",
+        c10::toString(tensor.scalar_type()));
+
+    TORCH_CHECK(
+        tensor.is_contiguous(),
+        name + " must be contiguous");
+}
+
+
+static inline void CHECK_CPU_UINT16(
+    const torch::Tensor &tensor,
+    const std::string &name)
+{
+    TORCH_CHECK(
+        tensor.device().is_cpu(),
+        name,
+        " must be a CPU tensor, got device ",
+        tensor.device().str());
+
+    TORCH_CHECK(
+        tensor.scalar_type() == torch::kUInt16,
+        name,
+        " must be uint16, got ",
+        c10::toString(tensor.scalar_type()));
+
+    TORCH_CHECK(
+        tensor.is_contiguous(),
+        name + " must be contiguous");
+}
+
+
 static inline void CHECK_CPU_INT32(
     const torch::Tensor &tensor,
     const std::string &name)

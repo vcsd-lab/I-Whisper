@@ -4,6 +4,7 @@
 
 #include "linear8/linear8_torch.h"
 #include "linear32/linear32_torch.h"
+#include "residual15/residual15_torch.h"
 
 std::string hello()
 {
@@ -79,4 +80,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         "linear32_accum_simd_debug",
         &linear32_accum_simd_debug_torch,
         "Linear32 simd accumulator debug");
+    
+
+    m.def(
+        "residual15_scalar",
+        &residual15_scalar_torch,
+        "I-Whisper complete Residual15 scalar kernel",
+        pybind11::arg("branch"),
+        pybind11::arg("residual"),
+        pybind11::arg("multiplier"));
 }
