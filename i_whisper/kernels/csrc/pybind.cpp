@@ -14,7 +14,6 @@ std::string hello()
     return "Hello from I-Whisper C++ extension!";
 }
 
-
 torch::Tensor rounding_rshift_debug(
     const torch::Tensor &x,
     const torch::Tensor &shift)
@@ -37,8 +36,6 @@ torch::Tensor rounding_rshift_debug(
 
     return output;
 }
-
-
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
@@ -137,21 +134,36 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         pybind11::arg("out_multiplier"),
         pybind11::arg("out_shift"));
     m.def(
+        "layernorm32_simd",
+        &layernorm32_simd_torch,
+        "I-Whisper complete LayerNorm32 SIMD kernel",
+        pybind11::arg("input"),
+        pybind11::arg("weight"),
+        pybind11::arg("bias"),
+        pybind11::arg("ln_multiplier"),
+        pybind11::arg("ln_shift"),
+        pybind11::arg("out_multiplier"),
+        pybind11::arg("out_shift"));
+    m.def(
         "layernorm32_stats_scalar",
         &layernorm32_stats_scalar_torch,
         "I-Whisper complete LayerNorm32 stats scalar kernel",
         pybind11::arg("input"));
     m.def(
+        "layernorm32_stats_simd",
+        &layernorm32_stats_simd_torch,
+        "I-Whisper complete LayerNorm32 stats SIMD kernel",
+        pybind11::arg("input"));
+
+    m.def(
         "layernorm32_rsqrt_scalar",
         &layernorm32_rsqrt_scalar_torch,
         "I-Whisper complete LayerNorm32 rsqrt scalar kernel",
         pybind11::arg("input"));
-    
     m.def(
         "rounding_rshift_debug",
         &rounding_rshift_debug,
         "I-Whisper complete rounding rshift debug kernel",
         pybind11::arg("x"),
-        pybind11::arg("shift")
-    );
+        pybind11::arg("shift"));
 }

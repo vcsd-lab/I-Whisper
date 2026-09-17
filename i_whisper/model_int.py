@@ -198,10 +198,20 @@ class LayerNorm_int(nn.LayerNorm):
                 self.out_req_multiplier,
                 self.out_req_shiftmount,
             )
+        elif self.backend == "simd":
+            out = _C.layernorm32_simd(
+                x,
+                self.weight,
+                self.bias,
+                self.ln_req_multiplier,
+                self.ln_req_shiftmount,
+                self.out_req_multiplier,
+                self.out_req_shiftmount,
+            )
         elif self.backend == "check":
             ref = self._forward_torch(x)
 
-            out = _C.layernorm32_scalar(
+            out = _C.layernorm32_simd(
                 x,
                 self.weight,
                 self.bias,
