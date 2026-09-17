@@ -37,17 +37,44 @@ def Rshift(x, N):
         for NEGATIVE number: 2^(N-1) - 1
         So the rounding bias is: 2^(N-1) - signbit
     '''
-    # assert x.dtype is torch.int32, "Rshift function only support int32 tensor!"
+    if x.dtype is not torch.int32:
+        raise NotImplementedError(
+            "Rshift only supports int32 tensor!"
+        )
 
-    try:
-        if x.dtype is torch.int32:
-            ROUNDING_BIAS = (1 << (N-1).to(torch.int32).clamp(0,32)) - torch.signbit(x).to(torch.int32)
-            return (x + ROUNDING_BIAS)>>(N.to(torch.int32).clamp(0,32))
-        else:
-            raise NotImplementedError("Rshift function only support int32 tensor!")
-    except:
-        ROUNDING_BIAS = (1 << N-1) - torch.signbit(x).int()
-        return (x + ROUNDING_BIAS)>>N
+    if not isinstance(N, torch.Tensor):
+        N = torch.tensor(
+            N,
+            dtype=torch.int32,
+            device=x.device,
+        )
+    else:
+        N = N.to(
+            dtype=torch.int32,
+            device=x.device,
+        )
+
+    shift = N.clamp(0, 32)
+
+    rounding_shift = (shift - 1).clamp(min=0)
+
+    ROUNDING_BIAS = (
+        (1 << rounding_shift)
+        - torch.signbit(x).to(torch.int32)
+    )
+
+    output = (
+        x + ROUNDING_BIAS
+    ) >> shift
+
+    # torch.where broadcasts condition to x/output shape
+    output = torch.where(
+        shift == 0,
+        x,
+        output,
+    )
+
+    return output
 
 
 

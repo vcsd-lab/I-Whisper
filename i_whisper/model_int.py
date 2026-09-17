@@ -61,6 +61,18 @@ class ModelDimensions:
     n_text_layer: int  # base: 6, tiny: 4
 
 
+def Rshift_legacy(x, N):
+    if x.dtype is torch.int32:
+        ROUNDING_BIAS = (
+            1 << (N - 1).to(torch.int32).clamp(0, 32)
+        ) - torch.signbit(x).to(torch.int32)
+
+        return (
+            x + ROUNDING_BIAS
+        ) >> N.to(torch.int32).clamp(0, 32)
+
+    raise NotImplementedError
+
 class GELU_int(nn.Module):
     def __init__(
         self,
@@ -142,19 +154,19 @@ class LayerNorm_int(nn.LayerNorm):
         eps: float = 1e-5,
         elementwise_affine: bool = True,
         device: torch.device = "cpu",
-        debug: bool = False
+        backend: str = "torch",
     ) -> None:
         '''inherit from nn.LayerNorm'''
         super().__init__(normalized_shape, eps, elementwise_affine, device=device)
         
         '''meta parameters'''
-        self.debug = debug
+        self.backend = backend
 
         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
         self.act_bit = 15
         self.wgt_bit = 8
         self.norm_out_bit = 8
-        self.offset = 12
+        self.offset = 13
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_range = 16383      # Signed, 2**(self.act_bit-1)-1
@@ -169,14 +181,183 @@ class LayerNorm_int(nn.LayerNorm):
         self.ln_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8, device=device), requires_grad=False)
         self.out_req_multiplier = nn.Parameter(torch.ones((1), dtype=torch.uint32, device=device), requires_grad=False)
         self.out_req_shiftmount = nn.Parameter(torch.zeros((1), dtype=torch.int8, device=device), requires_grad=False)
-
-
+    
+    
     def forward(self, x: Tensor) -> Tensor:
+        assert x.dtype == torch.int16
+        res = x.clone()
+        if self.backend == "torch":
+            out = self._forward_torch(x)
+        elif self.backend == "scalar":
+            out = _C.layernorm32_scalar(
+                x,
+                self.weight,
+                self.bias,
+                self.ln_req_multiplier,
+                self.ln_req_shiftmount,
+                self.out_req_multiplier,
+                self.out_req_shiftmount,
+            )
+        elif self.backend == "check":
+            ref = self._forward_torch(x)
+
+            out = _C.layernorm32_scalar(
+                x,
+                self.weight,
+                self.bias,
+                self.ln_req_multiplier,
+                self.ln_req_shiftmount,
+                self.out_req_multiplier,
+                self.out_req_shiftmount,
+            )
+
+            if not torch.equal(out, ref):
+                row = 8
+                col = 2
+
+                # ----- Torch stats -----
+                norm_number = self.normalized_shape[0]
+
+                norm_multiplier = {
+                    1280: [True, False, False],
+                    1024: [False, False, False],
+                    768:  [False, True, True],
+                    512:  [False, False, False],
+                    384:  [False, True, True],
+                }
+
+                norm_shiftmount = {
+                    1280: 11,
+                    1024: 10,
+                    768: 10,
+                    512: 9,
+                    384: 9,
+                }
+
+                def mul_by_shift_multiplier(v, multiplier):
+                    o = v.clone()
+                    if multiplier[0]:
+                        o += v >> 1
+                    if multiplier[1]:
+                        o += v >> 2
+                    if multiplier[2]:
+                        o += v >> 3
+                    return o
+
+                norm_mul = norm_multiplier[norm_number]
+                norm_shift = norm_shiftmount[norm_number]
+
+                mean_ref = torch.sum(
+                    x.int(),
+                    dim=-1,
+                    keepdim=True,
+                ).int()
+
+                mean_ref = (
+                    mul_by_shift_multiplier(mean_ref, norm_mul)
+                    >> norm_shift
+                )
+
+                sub_square = (x - mean_ref).abs() ** 2
+
+                max_bit_length = int_bit_length(
+                    sub_square.max(
+                        dim=-1,
+                        keepdim=True,
+                    ).values
+                )
+
+                renorm_ref = (
+                    max_bit_length - 16
+                ).clamp(min=0)
+
+                renorm_ref = (
+                    renorm_ref + 1
+                ) & ~1
+
+                var_ref = torch.sum(
+                    Rshift(
+                        sub_square,
+                        renorm_ref,
+                    ),
+                    dim=-1,
+                    keepdim=True,
+                ).int()
+
+                var_ref = (
+                    mul_by_shift_multiplier(
+                        var_ref,
+                        norm_mul,
+                    )
+                    >> norm_shift
+                ).int()
+
+                invstd_ref = Fast_Inverse_Square_Root(
+                    var_ref,
+                    12,
+                    2,
+                )
+
+                # ----- C++ debug kernels -----
+                mean_cpp, var_cpp, renorm_cpp = (
+                    _C.layernorm32_stats_scalar(
+                        x.contiguous()
+                    )
+                )
+
+                flat_row = row  # shape = [1,1500,512]
+
+                invstd_cpp = _C.layernorm32_rsqrt_scalar(
+                    var_cpp
+                )
+
+                print("==== LN DEBUG ====")
+                print(
+                    "mean:",
+                    mean_ref[0, row, 0].item(),
+                    mean_cpp[flat_row].item(),
+                )
+                print(
+                    "renorm:",
+                    renorm_ref[0, row, 0].item(),
+                    renorm_cpp[flat_row].item(),
+                )
+                print(
+                    "var:",
+                    var_ref[0, row, 0].item(),
+                    var_cpp[flat_row].item(),
+                )
+                print(
+                    "invstd:",
+                    invstd_ref[0, row, 0].item(),
+                    invstd_cpp[flat_row].item(),
+                )
+
+                print(
+                    "input:",
+                    x[0, row, col].item(),
+                )
+                print(
+                    "weight:",
+                    self.weight[col].item(),
+                )
+                print(
+                    "bias:",
+                    self.bias[col].item()
+                    if self.bias is not None else None,
+                )
+
+                raise RuntimeError("LayerNorm32 mismatch")
+        else:
+            raise NotImplementedError(f"Backend {self.backend} is not implemented.")
+        
+        return out, res
+    
+
+
+    def _forward_torch(self, x: Tensor) -> Tensor:
         '''LayerNorm with Quantize function
         '''
-        assert x.dtype == torch.int16, "Input tensor must be int16 in integer inference mode!"
-        res = x.clone()
-
         norm_number = self.normalized_shape[0]
         # replace norm division to multiplication + right shift
         # 1/1280 = (1/5) * 2^-8 = 1.6 * 2^-11 approx 1.5 * 2^-11
@@ -214,6 +395,7 @@ class LayerNorm_int(nn.LayerNorm):
 
         mean = torch.sum(x.int(), dim=-1, keepdim=True).int()
         mean = mul_by_shift_multiplier(mean, norm_mul) >> norm_shmnt # reduce by mul & rshift, avoid division
+        # print("centered:", (x - mean)[0, row, col].item())
         sub_square = (x - mean).abs()**2
 
         max_bit_length = int_bit_length(sub_square.max(dim=-1, keepdim=True).values) # max bit usage in sub_square's last dim (hidden dim)
@@ -224,26 +406,65 @@ class LayerNorm_int(nn.LayerNorm):
         renorm_shmnt = (renorm_shmnt + 1) & ~1
 
         var = torch.sum((Rshift(sub_square, renorm_shmnt)), dim=-1, keepdim=True).int()
+        # var += (
+        #     (renorm_shmnt == 0).int()
+        #     * x.shape[-1]
+        # )
         var = (mul_by_shift_multiplier(var, norm_mul) >> norm_shmnt).int() # reduce by mul & rshift, avoid division
+        # explicit integer variance stabilization
+        # var = var + (renorm_shmnt == 0).to(torch.int32)
+
         invstd = Fast_Inverse_Square_Root(var, self.offset, 2) # this is in fixed point q20.12 format
+        # print("centered*invstd:", ((x - mean) * invstd)[0, row, col].item())
         x = ((x - mean) * invstd)
 
 
         '''Fixedpoint Multiplication'''
+        # print("*ln_multiplier:", (x * self.ln_req_multiplier)[0, row, col].item())
+        # print(
+        #     "norm_shift:",
+        #      (self.ln_req_shiftmount+(renorm_shmnt>>1))[0, row, 0].item()
+        #     if  (self.ln_req_shiftmount+(renorm_shmnt>>1)).dim() == 3
+        #     else  (self.ln_req_shiftmount+(renorm_shmnt>>1)).item()
+        # )
         x = Rshift( (x * self.ln_req_multiplier), (self.ln_req_shiftmount+(renorm_shmnt>>1)) )
+        # print(
+        #     "after norm Rshift:",
+        #     x[0, row, col].item()
+        # )
         x = x.clamp(min=-self.act_range, max=self.act_range)
+        # print(
+        #     "after clamp:",
+        #     x[0, row, col].item()
+        # )
 
+        # print(
+        #     "after weight:",
+        #     (x.mul(self.weight.int()))[0, row, col].item()
+        # )
         if self.bias is None:
             x = x.mul(self.weight.int())
         else:
             x = (x.mul(self.weight.int()) + self.bias)
+            # print(
+            #     "after bias:",
+            #     x[0, row, col].item()
+            # )
 
         '''Re-Quantize final output'''
         x = (x.long().mul(self.out_req_multiplier.long())>>32).int()
+        # print(
+        #     "after MULH:",
+        #     x[0, row, col].item()
+        # )
         x = Rshift(x, self.out_req_shiftmount)
+        # print(
+        #     "after final Rshift:",
+        #     x[0, row, col].item()
+        # )
         x = x.clamp(min=-self.norm_out_range, max=self.norm_out_range).to(torch.int8)
 
-        return x, res
+        return x
 
     @staticmethod
     def copy_param(quant_layer):
@@ -1009,3 +1230,42 @@ def set_residual_backend(
                     f"Residual backend for {name} "
                     f"from {layer.backend} to {backend}."
                 )
+
+
+def set_layernorm_backend(
+    model,
+    backend,
+    logger=None,
+):
+    assert backend in [
+        "torch",
+        "scalar",
+        "simd",
+        "check",
+    ]
+
+    log = (
+        logger.debug
+        if logger is not None
+        else print
+    )
+
+    for name, layer in model.named_modules():
+        if isinstance(layer, LayerNorm_int):
+            if layer.backend == backend:
+                log(
+                    f"LayerNorm backend for {name} "
+                    f"is already set to {backend}."
+                )
+            else:
+                layer.backend = backend
+                log(
+                    f"LayerNorm backend for {name} "
+                    f"set to {backend}."
+                )
+            
+            # if layer.offset == 12:
+            #     print(f"LayerNorm offset for {name} is 12, changing to 13.")
+            #     layer.offset = 13
+            #     layer.ln_req_shiftmount.data.copy_(layer.ln_req_shiftmount.data + 1)
+            #     print(f"LayerNorm ln_req_shiftmount for {name} changed to {layer.ln_req_shiftmount.data.item()}.")

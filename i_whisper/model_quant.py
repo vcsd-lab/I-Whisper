@@ -301,7 +301,7 @@ class LayerNorm_quantized(nn.LayerNorm):
         self.bias_bit = self.act_bit + self.wgt_bit + 8
         self.norm_bit = 15
         self.out_bit = 8
-        self.offset = 12
+        self.offset = 13
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_range = 2**(self.act_bit-1)-1              # Signed

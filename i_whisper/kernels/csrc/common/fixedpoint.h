@@ -48,17 +48,37 @@ inline int32_t rounding_rshift(
     int32_t x,
     uint32_t shift)
 {
+    // if (shift == 0)
+    // {
+    //     return x;
+    // }
+
+    // const int32_t rounding =
+    //     (int32_t{1} << (shift - 1))
+    //     - (x < 0 ? 1 : 0);
+
+    // const int32_t value =
+    //     x + rounding;
+
+    // return value >> shift;
     if (shift == 0)
     {
         return x;
     }
 
-    const int32_t rounding =
-        (int32_t{1} << (shift - 1))
-        - (x < 0 ? 1 : 0);
+    const uint32_t sign =
+        static_cast<uint32_t>(x) >> 31;
+
+    const uint32_t rounding =
+        (uint32_t{1} << (shift - 1))
+        - sign;
+
+    const uint32_t wrapped =
+        static_cast<uint32_t>(x)
+        + rounding;
 
     const int32_t value =
-        x + rounding;
+        static_cast<int32_t>(wrapped);
 
     return value >> shift;
 }

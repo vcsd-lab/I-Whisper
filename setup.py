@@ -28,6 +28,8 @@ sources = [
     str(CSRC / "residual15" / "residual15_torch.cpp"),
     str(CSRC / "residual15" / "residual15_scalar.cpp"),
     str(CSRC / "residual15" / "residual15_simd.cpp"),
+    str(CSRC / "layernorm" / "layernorm_torch.cpp"),
+    str(CSRC / "layernorm" / "layernorm_scalar.cpp"),
 ]
 
 include_dirs = []
