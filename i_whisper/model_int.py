@@ -139,9 +139,18 @@ class GELU_int(nn.Module):
                 self.luto_req_multiplier,
                 self.luto_req_shiftmount
             )
+        elif self.backend == "simd":
+            out = _C.gelu_simd(
+                x.contiguous(),
+                self.lut,
+                self.luti_req_multiplier,
+                self.luti_req_shiftmount,
+                self.luto_req_multiplier,
+                self.luto_req_shiftmount
+            )
         elif self.backend == "check":
             ref = self._forward_torch(x)
-            out = _C.gelu_scalar(
+            out = _C.gelu_simd(
                 x.contiguous(),
                 self.lut,
                 self.luti_req_multiplier,

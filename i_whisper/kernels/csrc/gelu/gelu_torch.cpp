@@ -2,17 +2,18 @@
 #include "gelu.h"
 
 #include "../common/checktensor.h"
+#include "../common/backend.h"
 
 #include <torch/extension.h>
 
-
-torch::Tensor gelu_scalar_torch(
+torch::Tensor gelu_impl(
     const torch::Tensor &input,
     const torch::Tensor &lut,
     const torch::Tensor &luti_multiplier,
     const torch::Tensor &luti_shift,
     const torch::Tensor &luto_multiplier,
-    const torch::Tensor &luto_shift)
+    const torch::Tensor &luto_shift,
+    const iwhisper::backend::ArmBackend backend)
 {
     // ========================================================
     // dtype / device checks
@@ -42,7 +43,6 @@ torch::Tensor gelu_scalar_torch(
         luto_shift,
         "luto_shift");
 
-
     TORCH_CHECK(
         input.dim() >= 1,
         "input must have at least one dimension");
@@ -51,16 +51,14 @@ torch::Tensor gelu_scalar_torch(
         input.is_contiguous(),
         "input must be contiguous");
 
-
     // ========================================================
     // LUT contract
     // ========================================================
 
     TORCH_CHECK(
         lut.dim() == 1 &&
-        lut.numel() == 16,
+            lut.numel() == 16,
         "lut must contain exactly 16 entries");
-
 
     // ========================================================
     // Parameter shapes
@@ -82,17 +80,13 @@ torch::Tensor gelu_scalar_torch(
         luto_shift.dim() == 1,
         "luto_shift must be 1D");
 
-
     TORCH_CHECK(
-        luti_multiplier.numel()
-            == luti_shift.numel(),
+        luti_multiplier.numel() == luti_shift.numel(),
         "luti multiplier/shift size mismatch");
 
     TORCH_CHECK(
-        luto_multiplier.numel()
-            == luto_shift.numel(),
+        luto_multiplier.numel() == luto_shift.numel(),
         "luto multiplier/shift size mismatch");
-
 
     const int64_t channels =
         input.size(-1);
@@ -103,39 +97,93 @@ torch::Tensor gelu_scalar_torch(
     const int64_t luto_count =
         luto_multiplier.numel();
 
-
     TORCH_CHECK(
         luti_count == 1 ||
-        luti_count == channels,
+            luti_count == channels,
         "luti parameters must be scalar or match "
         "input.size(-1)");
 
     TORCH_CHECK(
         luto_count == 1 ||
-        luto_count == channels,
+            luto_count == channels,
         "luto parameters must be scalar or match "
         "input.size(-1)");
-
 
     auto output =
         torch::empty_like(
             input,
             torch::kInt8);
 
+    switch (backend)
+    {
+    case iwhisper::backend::ArmBackend::Scalar:
+        iwhisper::gelu_scalar(
+            input.data_ptr<int8_t>(),
+            lut.data_ptr<uint8_t>(),
+            luti_multiplier.data_ptr<uint32_t>(),
+            luti_shift.data_ptr<int8_t>(),
+            luto_multiplier.data_ptr<uint8_t>(),
+            luto_shift.data_ptr<int8_t>(),
+            output.data_ptr<int8_t>(),
+            input.numel(),
+            channels,
+            luti_count,
+            luto_count);
+        break;
 
-    iwhisper::gelu_scalar(
-        input.data_ptr<int8_t>(),
-        lut.data_ptr<uint8_t>(),
-        luti_multiplier.data_ptr<uint32_t>(),
-        luti_shift.data_ptr<int8_t>(),
-        luto_multiplier.data_ptr<uint8_t>(),
-        luto_shift.data_ptr<int8_t>(),
-        output.data_ptr<int8_t>(),
-        input.numel(),
-        channels,
-        luti_count,
-        luto_count);
-
+    case iwhisper::backend::ArmBackend::SIMD:
+        iwhisper::gelu_simd(
+            input.data_ptr<int8_t>(),
+            lut.data_ptr<uint8_t>(),
+            luti_multiplier.data_ptr<uint32_t>(),
+            luti_shift.data_ptr<int8_t>(),
+            luto_multiplier.data_ptr<uint8_t>(),
+            luto_shift.data_ptr<int8_t>(),
+            output.data_ptr<int8_t>(),
+            input.numel(),
+            channels,
+            luti_count,
+            luto_count);
+        break;
+    default:
+        TORCH_CHECK(false, "Unsupported backend");
+    }
 
     return output;
+}
+
+torch::Tensor gelu_scalar_torch(
+    const torch::Tensor &input,
+    const torch::Tensor &lut,
+    const torch::Tensor &luti_multiplier,
+    const torch::Tensor &luti_shift,
+    const torch::Tensor &luto_multiplier,
+    const torch::Tensor &luto_shift)
+{
+    return gelu_impl(
+        input,
+        lut,
+        luti_multiplier,
+        luti_shift,
+        luto_multiplier,
+        luto_shift,
+        iwhisper::backend::ArmBackend::Scalar);
+}
+
+torch::Tensor gelu_simd_torch(
+    const torch::Tensor &input,
+    const torch::Tensor &lut,
+    const torch::Tensor &luti_multiplier,
+    const torch::Tensor &luti_shift,
+    const torch::Tensor &luto_multiplier,
+    const torch::Tensor &luto_shift)
+{
+    return gelu_impl(
+        input,
+        lut,
+        luti_multiplier,
+        luti_shift,
+        luto_multiplier,
+        luto_shift,
+        iwhisper::backend::ArmBackend::SIMD);
 }

@@ -178,4 +178,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         pybind11::arg("luti_shift"),
         pybind11::arg("luto_multiplier"),
         pybind11::arg("luto_shift"));
+    m.def(
+        "gelu_simd",
+        &gelu_simd_torch,
+        "I-Whisper integer GeLU SIMD kernel",
+        pybind11::arg("input"),
+        pybind11::arg("lut"),
+        pybind11::arg("luti_multiplier"),
+        pybind11::arg("luti_shift"),
+        pybind11::arg("luto_multiplier"),
+        pybind11::arg("luto_shift"));
 }

@@ -64,6 +64,9 @@ inline int32_t rounding_rshift(
     if (shift == 0)
     {
         return x;
+    } else if (shift >= 32)
+    {
+        return 0;
     }
 
     const uint32_t sign =

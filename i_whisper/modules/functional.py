@@ -39,7 +39,7 @@ def Rshift(x, N):
     '''
     if x.dtype is not torch.int32:
         raise NotImplementedError(
-            "Rshift only supports int32 tensor!"
+            f"Rshift only supports int32, got {x.dtype}"
         )
 
     if not isinstance(N, torch.Tensor):
@@ -54,29 +54,38 @@ def Rshift(x, N):
             device=x.device,
         )
 
-    shift = N.clamp(0, 32)
+    shift = N.clamp(min=0)
 
-    rounding_shift = (shift - 1).clamp(min=0)
+    valid_shift = shift.clamp(
+        max=31
+    )
 
-    ROUNDING_BIAS = (
+    rounding_shift = (
+        valid_shift - 1
+    ).clamp(min=0)
+
+    rounding_bias = (
         (1 << rounding_shift)
         - torch.signbit(x).to(torch.int32)
     )
 
     output = (
-        x + ROUNDING_BIAS
-    ) >> shift
+        x + rounding_bias
+    ) >> valid_shift
 
-    # torch.where broadcasts condition to x/output shape
     output = torch.where(
         shift == 0,
         x,
         output,
     )
 
+    output = torch.where(
+        shift >= 32,
+        torch.zeros_like(x),
+        output,
+    )
+
     return output
-
-
 
 def Batch_Head_s8s8s32_GeMM(A: torch.Tensor, B: torch.Tensor):
     """Batch head matrix multiplication for quantized tensors
