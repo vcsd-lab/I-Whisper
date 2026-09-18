@@ -31,6 +31,8 @@ sources = [
     str(CSRC / "layernorm" / "layernorm_torch.cpp"),
     str(CSRC / "layernorm" / "layernorm_scalar.cpp"),
     str(CSRC / "layernorm" / "layernorm_simd.cpp"),
+    str(CSRC / "gelu" / "gelu_torch.cpp"),
+    str(CSRC / "gelu" / "gelu_scalar.cpp"),
 ]
 
 include_dirs = []

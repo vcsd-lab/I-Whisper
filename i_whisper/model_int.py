@@ -78,20 +78,20 @@ class GELU_int(nn.Module):
         self,
         channel_num : int = 1,
         out_channel_num: int = 1,
-        debug: bool = False,
+        backend: str = "torch"
     ) -> None:
         '''inherit from nn.Module'''
         super().__init__()
 
         '''meta parameters'''
         self.channel_num = channel_num
+        self.backend = backend
         if channel_num == 1:
             self.out_channel_num = out_channel_num
         else:
             self.out_channel_num = channel_num
         # Because ReQuant of multi-channel always need multi-scale
         # So we need to set out_channel_num for multi-channel GELU
-        self.debug = debug
 
         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
         self.act_bit = 8
@@ -112,7 +112,7 @@ class GELU_int(nn.Module):
         self.de_smooth_vec = nn.Parameter(torch.ones(channel_num, dtype=torch.uint8), requires_grad=False)
     
 
-    def forward(self, x: Tensor) -> Tensor:
+    def _forward_torch(self, x: Tensor) -> Tensor:
         assert x.dtype == torch.int8, "Input tensor must be int8 in integer inference mode!"
         # Integer Inference Mode
 
@@ -125,6 +125,35 @@ class GELU_int(nn.Module):
         x = Rshift(x.mul(self.luto_req_multiplier.int()), self.luto_req_shiftmount)
         x = x.clamp(-self.act_range, self.act_range).to(torch.int8)
         return x
+    
+    def forward(self, x: Tensor) -> Tensor:
+        assert x.dtype == torch.int8, "Input tensor must be int8 in integer inference mode!"
+        if self.backend == "torch":
+            out = self._forward_torch(x)
+        elif self.backend == "scalar":
+            out = _C.gelu_scalar(
+                x.contiguous(),
+                self.lut,
+                self.luti_req_multiplier,
+                self.luti_req_shiftmount,
+                self.luto_req_multiplier,
+                self.luto_req_shiftmount
+            )
+        elif self.backend == "check":
+            ref = self._forward_torch(x)
+            out = _C.gelu_scalar(
+                x.contiguous(),
+                self.lut,
+                self.luti_req_multiplier,
+                self.luti_req_shiftmount,
+                self.luto_req_multiplier,
+                self.luto_req_shiftmount
+            )
+            
+            assert torch.equal(out, ref), "GELU mismatch"
+        else:
+            raise NotImplementedError(f"Backend {self.backend} is not implemented.")
+        return out
     
     @staticmethod
     def copy_param(quant_layer: 'GELU_quantized') -> None:
@@ -1279,3 +1308,36 @@ def set_layernorm_backend(
             #     layer.offset = 13
             #     layer.ln_req_shiftmount.data.copy_(layer.ln_req_shiftmount.data + 1)
             #     print(f"LayerNorm ln_req_shiftmount for {name} changed to {layer.ln_req_shiftmount.data.item()}.")
+
+
+def set_gelu_backend(
+    model,
+    backend,
+    logger=None,
+):
+    assert backend in [
+        "torch",
+        "scalar",
+        "simd",
+        "check",
+    ]
+
+    log = (
+        logger.debug
+        if logger is not None
+        else print
+    )
+
+    for name, layer in model.named_modules():
+        if isinstance(layer, GELU_int):
+            if layer.backend == backend:
+                log(
+                    f"GELU backend for {name} "
+                    f"is already set to {backend}."
+                )
+            else:
+                layer.backend = backend
+                log(
+                    f"GELU backend for {name} "
+                    f"set to {backend}."
+                )

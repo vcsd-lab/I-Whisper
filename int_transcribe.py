@@ -189,9 +189,10 @@ from i_whisper.modules.linear import set_linear8_backend, set_linear32_backend
 set_linear8_backend(model, backend="simd", logger=logger)  # set backend for Linear8 layers
 set_linear32_backend(model, backend="simd", logger=logger)  # set backend for Linear32 layers
 
-from i_whisper.model_int import set_residual_backend, set_layernorm_backend
+from i_whisper.model_int import set_residual_backend, set_layernorm_backend, set_gelu_backend
 set_residual_backend(model, backend="simd", logger=logger)  # set backend for ResidualAttention
 set_layernorm_backend(model, backend="simd", logger=logger)  # set backend for LayerNorm layers
+set_gelu_backend(model, backend="scalar", logger=logger)  # set backend for GELU layers
 
 
 if args.test:
