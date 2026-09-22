@@ -34,6 +34,8 @@ sources = [
     str(CSRC / "gelu" / "gelu_torch.cpp"),
     str(CSRC / "gelu" / "gelu_scalar.cpp"),
     str(CSRC / "gelu" / "gelu_simd.cpp"),
+    str(CSRC / "attention" / "attention_torch.cpp"),
+    str(CSRC / "attention" / "attention_scalar.cpp"),
 ]
 
 include_dirs = []

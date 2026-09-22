@@ -7,6 +7,7 @@
 #include "residual15/residual15_torch.h"
 #include "layernorm/layernorm_torch.h"
 #include "gelu/gelu_torch.h"
+#include "attention/attention_torch.h"
 #include "common/fixedpoint.h"
 #include "common/checktensor.h"
 
@@ -167,7 +168,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         "I-Whisper complete rounding rshift debug kernel",
         pybind11::arg("x"),
         pybind11::arg("shift"));
-    
+
     m.def(
         "gelu_scalar",
         &gelu_scalar_torch,
@@ -188,4 +189,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         pybind11::arg("luti_shift"),
         pybind11::arg("luto_multiplier"),
         pybind11::arg("luto_shift"));
+
+    m.def(
+        "qk_scalar",
+        &qk_scalar_torch,
+        "I-Whisper QK^T scalar kernel",
+        py::arg("q"),
+        py::arg("k"));
 }
