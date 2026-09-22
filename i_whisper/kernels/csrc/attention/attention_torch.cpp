@@ -3,10 +3,12 @@
 #include "attention.h"
 
 #include "../common/checktensor.h"
+#include "../common/backend.h"
 
-torch::Tensor qk_scalar_torch(
+torch::Tensor qk_torch_impl(
     const torch::Tensor &q,
-    const torch::Tensor &k)
+    const torch::Tensor &k,
+    iwhisper::backend::ArmBackend backend)
 {
     iwhisper::checktensor::CHECK_CPU_INT8(q, "q");
     iwhisper::checktensor::CHECK_CPU_INT8(k, "k");
@@ -58,15 +60,53 @@ torch::Tensor qk_scalar_torch(
                 .dtype(torch::kInt32)
                 .device(torch::kCPU));
 
-    iwhisper::qk_scalar(
-        q.data_ptr<int8_t>(),
-        k.data_ptr<int8_t>(),
-        output.data_ptr<int32_t>(),
-        B,
-        H,
-        Tq,
-        Tk,
-        D);
+    switch (backend)
+    {
+    case iwhisper::backend::ArmBackend::Scalar:
+        iwhisper::qk_scalar(
+            q.data_ptr<int8_t>(),
+            k.data_ptr<int8_t>(),
+            output.data_ptr<int32_t>(),
+            B,
+            H,
+            Tq,
+            Tk,
+            D);
+        break;
+    case iwhisper::backend::ArmBackend::SIMD:
+        iwhisper::qk_simd(
+            q.data_ptr<int8_t>(),
+            k.data_ptr<int8_t>(),
+            output.data_ptr<int32_t>(),
+            B,
+            H,
+            Tq,
+            Tk,
+            D);
+        break;
+    default:
+        TORCH_CHECK(false, "Unsupported backend");
+    }
 
     return output;
+}
+
+torch::Tensor qk_scalar_torch(
+    const torch::Tensor &q,
+    const torch::Tensor &k)
+{
+    return qk_torch_impl(
+        q,
+        k,
+        iwhisper::backend::ArmBackend::Scalar);
+}
+
+torch::Tensor qk_simd_torch(
+    const torch::Tensor &q,
+    const torch::Tensor &k)
+{
+    return qk_torch_impl(
+        q,
+        k,
+        iwhisper::backend::ArmBackend::SIMD);
 }

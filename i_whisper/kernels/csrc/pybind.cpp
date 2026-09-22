@@ -194,6 +194,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         "qk_scalar",
         &qk_scalar_torch,
         "I-Whisper QK^T scalar kernel",
-        py::arg("q"),
-        py::arg("k"));
+        pybind11::arg("q"),
+        pybind11::arg("k"));
+    
+    m.def(
+        "qk_simd",
+        &qk_simd_torch,
+        "I-Whisper QK^T SIMD kernel",
+        pybind11::arg("q"),
+        pybind11::arg("k"));
 }

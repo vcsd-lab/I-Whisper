@@ -65,4 +65,4 @@ namespace iwhisper
         }
     }
 
-}
+} // namespace iwhisper

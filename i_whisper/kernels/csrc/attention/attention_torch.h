@@ -8,3 +8,6 @@ torch::Tensor qk_scalar_torch(
     const torch::Tensor &q,
     const torch::Tensor &k);
 
+torch::Tensor qk_simd_torch(
+    const torch::Tensor &q,
+    const torch::Tensor &k);
