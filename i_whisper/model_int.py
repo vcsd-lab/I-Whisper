@@ -738,26 +738,6 @@ class MultiHeadAttention_int(nn.Module):
         qk = qk.clamp(-32768,32767).to(torch.int16)
 
         '''Calculate softmax(QK^T) * V'''
-        # if mask is not None:
-        #     if self.backend == "torch":
-        #         qk_exp = self.shift_exp(qk, mask[:n_ctx, :n_ctx])
-        #     elif self.backend == "scalar":
-        #         qk_exp = _C.shift_exp_scalar(qk, mask[:n_ctx, :n_ctx].contiguous(), self.qk_frac_bits)
-        #     elif self.backend == "check":
-        #         qk_exp_check = self.shift_exp(qk.clone(), mask[:n_ctx, :n_ctx])
-        #         qk_exp = _C.shift_exp_scalar(qk, mask[:n_ctx, :n_ctx].contiguous(), self.qk_frac_bits)
-        #         assert torch.equal(qk_exp, qk_exp_check), "Shift exp mismatch between scalar and torch! (masked)"
-
-        # else:
-        #     if self.backend == "torch":
-        #         qk_exp = self.shift_exp(qk, mask)
-        #     elif self.backend == "scalar":
-        #         qk_exp = _C.shift_exp_scalar(qk, mask, self.qk_frac_bits)
-        #     elif self.backend == "check":
-        #         qk_exp_check = self.shift_exp(qk.clone(), mask)
-        #         qk_exp = _C.shift_exp_scalar(qk, mask, self.qk_frac_bits)
-        #         assert torch.equal(qk_exp, qk_exp_check), "Shift exp mismatch between scalar and torch! (unmasked)"
-        '''Calculate softmax(QK^T) * V'''
         attn_mask = None
 
         if mask is not None:
