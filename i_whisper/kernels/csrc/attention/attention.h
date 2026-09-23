@@ -26,4 +26,16 @@ void qk_simd(
     int64_t k_length,
     int64_t head_dim);
 
+
+void shift_exp_scalar(
+    const int16_t *input,
+    const bool *mask,
+    uint8_t *output,
+    int64_t batch,
+    int64_t heads,
+    int64_t q_length,
+    int64_t k_length,
+    int32_t frac_bits,
+    bool has_mask);
+
 }

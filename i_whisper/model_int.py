@@ -638,12 +638,14 @@ class MultiHeadAttention_int(nn.Module):
         self,
         n_state: int,
         n_head: int,
+        backend: str = "torch"
     ):
         '''inherit from nn.Module'''
         super().__init__()
         '''meta parameters'''
         self.n_state = n_state
         self.n_head = n_head
+        self.backend = backend
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_range = 127    # Signed, 2**(self.act_bit-1)-1
@@ -693,9 +695,6 @@ class MultiHeadAttention_int(nn.Module):
         if mask is None:
             mask = torch.zeros_like(x, dtype=torch.bool)
         else:
-            if mask.dtype != torch.bool:
-                mask = (mask==float('-inf'))
-            
             mask = mask.unsqueeze(0).unsqueeze(0)
             mask = mask.repeat(
                 x.shape[0]//mask.shape[0],
@@ -739,10 +738,75 @@ class MultiHeadAttention_int(nn.Module):
         qk = qk.clamp(-32768,32767).to(torch.int16)
 
         '''Calculate softmax(QK^T) * V'''
+        # if mask is not None:
+        #     if self.backend == "torch":
+        #         qk_exp = self.shift_exp(qk, mask[:n_ctx, :n_ctx])
+        #     elif self.backend == "scalar":
+        #         qk_exp = _C.shift_exp_scalar(qk, mask[:n_ctx, :n_ctx].contiguous(), self.qk_frac_bits)
+        #     elif self.backend == "check":
+        #         qk_exp_check = self.shift_exp(qk.clone(), mask[:n_ctx, :n_ctx])
+        #         qk_exp = _C.shift_exp_scalar(qk, mask[:n_ctx, :n_ctx].contiguous(), self.qk_frac_bits)
+        #         assert torch.equal(qk_exp, qk_exp_check), "Shift exp mismatch between scalar and torch! (masked)"
+
+        # else:
+        #     if self.backend == "torch":
+        #         qk_exp = self.shift_exp(qk, mask)
+        #     elif self.backend == "scalar":
+        #         qk_exp = _C.shift_exp_scalar(qk, mask, self.qk_frac_bits)
+        #     elif self.backend == "check":
+        #         qk_exp_check = self.shift_exp(qk.clone(), mask)
+        #         qk_exp = _C.shift_exp_scalar(qk, mask, self.qk_frac_bits)
+        #         assert torch.equal(qk_exp, qk_exp_check), "Shift exp mismatch between scalar and torch! (unmasked)"
+        '''Calculate softmax(QK^T) * V'''
+        attn_mask = None
+
         if mask is not None:
-            qk_exp = self.shift_exp(qk, mask[:n_ctx, :n_ctx])
-        else:
-            qk_exp = self.shift_exp(qk, mask)
+            q_len = qk.shape[-2]
+            k_len = qk.shape[-1]
+
+            q_offset = k_len - q_len
+
+            assert q_offset >= 0
+
+            attn_mask = mask[
+                q_offset : q_offset + q_len,
+                :k_len
+            ].contiguous()
+
+            assert attn_mask.shape == (q_len, k_len)
+
+
+        if self.backend == "torch":
+            qk_exp = self.shift_exp(
+                qk,
+                attn_mask,
+            )
+
+        elif self.backend == "scalar":
+            qk_exp = _C.shift_exp_scalar(
+                qk,
+                attn_mask,
+                self.qk_frac_bits,
+            )
+
+        elif self.backend == "check":
+            qk_exp_check = self.shift_exp(
+                qk.clone(),
+                attn_mask,
+            )
+
+            qk_exp = _C.shift_exp_scalar(
+                qk,
+                attn_mask,
+                self.qk_frac_bits,
+            )
+
+            assert torch.equal(
+                qk_exp,
+                qk_exp_check,
+            ), "Shift exp mismatch between scalar and torch!"
+        
+        
 
         out = Batch_Head_u8s8s32_GeMM(qk_exp, v)  # int32 tensor
         sum_inv_mul = Fast_Inverse_Square_Root(qk_exp.sum(dim=-1, keepdim=True).int(), self.rsqrt_offset, Newton_iter=2)
@@ -1348,5 +1412,38 @@ def set_gelu_backend(
                 layer.backend = backend
                 log(
                     f"GELU backend for {name} "
+                    f"set to {backend}."
+                )
+
+
+def set_attention_backend(
+    model,
+    backend,
+    logger=None,
+):
+    assert backend in [
+        "torch",
+        "scalar",
+        "simd",
+        "check",
+    ]
+
+    log = (
+        logger.debug
+        if logger is not None
+        else print
+    )
+
+    for name, layer in model.named_modules():
+        if isinstance(layer, MultiHeadAttention_int):
+            if layer.backend == backend:
+                log(
+                    f"MultiHeadAttention backend for {name} "
+                    f"is already set to {backend}."
+                )
+            else:
+                layer.backend = backend
+                log(
+                    f"MultiHeadAttention backend for {name} "
                     f"set to {backend}."
                 )

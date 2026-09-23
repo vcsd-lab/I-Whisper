@@ -203,4 +203,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         "I-Whisper QK^T SIMD kernel",
         pybind11::arg("q"),
         pybind11::arg("k"));
+    
+    m.def(
+        "shift_exp_scalar",
+        &shift_exp_scalar_torch,
+        "I-Whisper shift and exp scalar kernel",
+        pybind11::arg("input"),
+        pybind11::arg("mask"),
+        pybind11::arg("frac_bits"));
+
 }

@@ -9,6 +9,31 @@ namespace iwhisper {
 namespace checktensor {
 
 
+
+
+static inline void CHECK_CPU_BOOL(
+    const torch::Tensor &tensor,
+    const std::string &name)
+{
+    TORCH_CHECK(
+        tensor.device().is_cpu(),
+        name,
+        " must be a CPU tensor, got device ",
+        tensor.device().str());
+
+    TORCH_CHECK(
+        tensor.scalar_type() == torch::kBool,
+        name,
+        " must be bool, got ",
+        c10::toString(tensor.scalar_type()));
+
+    TORCH_CHECK(
+        tensor.is_contiguous(),
+        name + " must be contiguous");
+}
+
+
+
 static inline void CHECK_CPU_INT8(
     const torch::Tensor &tensor,
     const std::string &name)

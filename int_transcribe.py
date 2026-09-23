@@ -126,6 +126,7 @@ parser.add_argument('--test', default=False, action='store_true')
 parser.add_argument('--sample', default=None, type=int, help='number of samples to test')
 parser.add_argument('--logdir', default='EXELOG', type=str, help='directory to save logs')
 parser.add_argument('--debug', default=False, action='store_true')
+parser.add_argument('-v', '--verbose', action='store_true', default=False, help='increase output verbosity')
 args = parser.parse_args()
 # torch.set_printoptions(precision=8,sci_mode=False,threshold=500)
 
@@ -141,7 +142,10 @@ color_fmt = colored('[%(asctime)s %(name)s]', 'green') + \
             ': |%(levelname)s| %(message)s' 
 # create console handlers for master process
 console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.INFO)
+if args.verbose:
+    console_handler.setLevel(logging.DEBUG)
+else:
+    console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(
     logging.Formatter(fmt=color_fmt, datefmt='%Y-%m-%d %H:%M:%S'))
 logger.addHandler(console_handler)
@@ -189,10 +193,11 @@ from i_whisper.modules.linear import set_linear8_backend, set_linear32_backend
 set_linear8_backend(model, backend="simd", logger=logger)  # set backend for Linear8 layers
 set_linear32_backend(model, backend="simd", logger=logger)  # set backend for Linear32 layers
 
-from i_whisper.model_int import set_residual_backend, set_layernorm_backend, set_gelu_backend
+from i_whisper.model_int import set_residual_backend, set_layernorm_backend, set_gelu_backend, set_attention_backend
 set_residual_backend(model, backend="simd", logger=logger)  # set backend for ResidualAttention
 set_layernorm_backend(model, backend="simd", logger=logger)  # set backend for LayerNorm layers
 set_gelu_backend(model, backend="simd", logger=logger)  # set backend for GELU layers
+set_attention_backend(model, backend="scalar", logger=logger)  # set backend for Attention layers
 
 
 if args.test:
