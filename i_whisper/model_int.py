@@ -646,6 +646,7 @@ class MultiHeadAttention_int(nn.Module):
         self.n_state = n_state
         self.n_head = n_head
         self.backend = backend
+        self.impl = "old"
 
         '''Quantization Hyper-parameters (Ranges of Parameters)'''
         self.act_range = 127    # Signed, 2**(self.act_bit-1)-1
@@ -691,58 +692,46 @@ class MultiHeadAttention_int(nn.Module):
         return self.out(wv)
 
 
-    def shift_exp(self,x,mask):
-        if mask is None:
-            mask = torch.zeros_like(x, dtype=torch.bool)
+    def shift_exp(self,x,row_max,mask):
+        x_sub = (x - row_max)
+        x_sub[x_sub>0] = torch.iinfo(torch.int16).min
+        if mask is not None:
+            torch_mask = mask.clone()
+            if torch_mask.dim() == 2:
+                torch_mask = torch_mask.unsqueeze(0).unsqueeze(0)
+            torch_mask = torch_mask.repeat(
+                x_sub.shape[0]//torch_mask.shape[0],
+                self.n_head//torch_mask.shape[1],
+                1,
+                1
+            )
         else:
-            mask = mask.unsqueeze(0).unsqueeze(0)
-            mask = mask.repeat(
-                x.shape[0]//mask.shape[0],
-                x.shape[1]//mask.shape[1],
-                x.shape[2]//mask.shape[2],
-                x.shape[3]//mask.shape[3])
-
+            torch_mask = None
         offset = self.qk_frac_bits
-        if x.dtype == torch.int16:
-            x[mask] = torch.iinfo(torch.int16).min
-        elif x.dtype == torch.int32:
-            x[mask] = torch.iinfo(torch.int32).min
-        x_max = x.max(dim=-1, keepdim=True).values + 1
-        x_sub = x - x_max
         x_mul_fix = x_sub + (x_sub >> 1) - (x_sub >> 4)  # qk_sub_fix * b1.0111
         x_mul_int = x_mul_fix >> offset
         x_mul_frac = x_mul_fix - (x_mul_int << offset)
         x_exp = ((1 << offset) + (x_mul_frac >> 1)) >> (-x_mul_int)
-        x_exp[mask] = 0
-        x_exp[x_sub>0] = 0
+        if torch_mask is not None:
+            x_exp[torch_mask] = 0
+        x_exp[x_sub>0] = torch.iinfo(torch.int16).min
         if self.qk_frac_bits > 7:
-            x_exp = x_exp.int() >> (self.qk_frac_bits - 7)
-        return x_exp.to(torch.uint8)
+            x_exp = (x_exp >> (self.qk_frac_bits - 7))
+        
+        x_exp = x_exp.to(torch.uint8)
+        x_exp_sum = x_exp.sum(dim=-1, keepdim=True).int()
+        return x_exp, x_exp_sum
 
-
-
+    
     def qkv_attention(
         self, q: Tensor, k: Tensor, v: Tensor, mask: Optional[Tensor] = None
     ):
-        n_batch, n_ctx, n_state = q.shape
-
-        qk = None
-
-        '''Calculate QK^T'''
-        q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
-        k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
-        v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 3, 1)
-
-        qk = Batch_Head_s8s8s32_GeMM(q, k)  # int32 tensor
-        qk = Rshift(qk.mul(self.qk_req_multiplier.int()), self.qk_req_shiftmount)
-        qk = qk.clamp(-32768,32767).to(torch.int16)
-
-        '''Calculate softmax(QK^T) * V'''
+        """Prepare attention mask if provided"""
         attn_mask = None
 
         if mask is not None:
-            q_len = qk.shape[-2]
-            k_len = qk.shape[-1]
+            q_len = q.shape[-2]
+            k_len = k.shape[-2]
 
             q_offset = k_len - q_len
 
@@ -754,42 +743,121 @@ class MultiHeadAttention_int(nn.Module):
             ].contiguous()
 
             assert attn_mask.shape == (q_len, k_len)
+            
+            
 
+
+        '''Calculate QK^T'''
+        qk = None
+        qk_row_max = None
+        if self.backend == "torch":
+            torch_attn_mask = attn_mask.clone() if attn_mask is not None else None
+            if torch_attn_mask is not None:
+                if torch_attn_mask.dim() == 2:
+                    torch_attn_mask = torch_attn_mask.unsqueeze(0).unsqueeze(0)
+                torch_attn_mask = torch_attn_mask.repeat(
+                    q.shape[0]//torch_attn_mask.shape[0],
+                    self.n_head//torch_attn_mask.shape[1],
+                    1,
+                    1
+                )
+
+            q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
+            k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
+
+            qk = Batch_Head_s8s8s32_GeMM(q, k)  # int32 tensor
+            qk = Rshift(qk.mul(self.qk_req_multiplier.int()), self.qk_req_shiftmount)
+            qk = qk.clamp(torch.iinfo(torch.int16).min, torch.iinfo(torch.int16).max).to(torch.int16)
+        
+            if torch_attn_mask is not None:
+                qk[torch_attn_mask] = torch.iinfo(torch.int16).min
+            qk_row_max = qk.max(dim=-1, keepdim=True).values.to(torch.int16) + 1
+            
+        elif self.backend == "scalar":
+            q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
+            k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
+            qk, qk_row_max = _C.qk_requant_rowmax_scalar(
+                q.contiguous(),
+                k.contiguous(),
+                attn_mask,
+                self.qk_req_multiplier,
+                self.qk_req_shiftmount
+            )
+        
+        elif self.backend == "check":
+            q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
+            k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
+
+            qk, qk_row_max = _C.qk_requant_rowmax_scalar(
+                q.contiguous(),
+                k.contiguous(),
+                attn_mask,
+                self.qk_req_multiplier,
+                self.qk_req_shiftmount
+            )
+
+            torch_attn_mask = attn_mask.clone() if attn_mask is not None else None
+            if torch_attn_mask is not None:
+                if torch_attn_mask.dim() == 2:
+                    torch_attn_mask = torch_attn_mask.unsqueeze(0).unsqueeze(0)
+                torch_attn_mask = torch_attn_mask.repeat(
+                    q.shape[0]//torch_attn_mask.shape[0],
+                    self.n_head//torch_attn_mask.shape[1],
+                    1,
+                    1
+                )
+
+            ref_qk = Batch_Head_s8s8s32_GeMM(q, k)  # int32 tensor
+            ref_qk = Rshift(ref_qk.mul(self.qk_req_multiplier.int()), self.qk_req_shiftmount)
+            ref_qk = ref_qk.clamp(torch.iinfo(torch.int16).min, torch.iinfo(torch.int16).max).to(torch.int16)
+        
+            if torch_attn_mask is not None:
+                ref_qk[torch_attn_mask] = torch.iinfo(torch.int16).min
+            ref_qk_row_max = ref_qk.max(dim=-1, keepdim=True).values.to(torch.int16) + 1
+
+            
+            assert torch.equal(qk, ref_qk), "QK mismatch"
+            assert torch.equal(qk_row_max, ref_qk_row_max), "QK row max mismatch"
+
+        else:
+            raise NotImplementedError(f"Backend {self.backend} is not implemented.")
+
+        v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 3, 1)
 
         if self.backend == "torch":
-            qk_exp = self.shift_exp(
+            qk_exp, qk_exp_sum = self.shift_exp(
                 qk,
+                qk_row_max,
                 attn_mask,
             )
-
         elif self.backend == "scalar":
-            qk_exp = _C.shift_exp_scalar(
+            qk_exp, qk_exp_sum = _C.shift_exp_scalar(
                 qk,
+                qk_row_max,
                 attn_mask,
                 self.qk_frac_bits,
             )
-
         elif self.backend == "check":
-            qk_exp_check = self.shift_exp(
-                qk.clone(),
+            qk_exp_ref, qk_exp_ref_sum = self.shift_exp(
+                qk,
+                qk_row_max,
                 attn_mask,
             )
-
-            qk_exp = _C.shift_exp_scalar(
+            qk_exp, qk_exp_sum = _C.shift_exp_scalar(
                 qk,
+                qk_row_max,
                 attn_mask,
                 self.qk_frac_bits,
             )
-
-            assert torch.equal(
-                qk_exp,
-                qk_exp_check,
-            ), "Shift exp mismatch between scalar and torch!"
-        
+            
+            assert torch.equal(qk_exp, qk_exp_ref), "QK exp mismatch"
+            assert torch.equal(qk_exp_sum, qk_exp_ref_sum), "QK exp sum mismatch"
+        else:
+            raise NotImplementedError(f"Backend {self.backend} is not implemented.")
         
 
         out = Batch_Head_u8s8s32_GeMM(qk_exp, v)  # int32 tensor
-        sum_inv_mul = Fast_Inverse_Square_Root(qk_exp.sum(dim=-1, keepdim=True).int(), self.rsqrt_offset, Newton_iter=2)
+        sum_inv_mul = Fast_Inverse_Square_Root(qk_exp_sum, self.rsqrt_offset, Newton_iter=2)
         out = Rshift(out.mul(sum_inv_mul).int(), self.rsqrt_offset)
         out = Rshift(out.mul(sum_inv_mul).int(), self.rsqrt_offset)
         out = Rshift(out.mul(self.av_req_multiplier.int()).int(), self.av_req_shiftmount)

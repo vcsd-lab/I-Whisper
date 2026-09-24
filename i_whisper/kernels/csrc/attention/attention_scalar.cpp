@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "../common/fixedpoint.h"
+
 namespace iwhisper
 {
 
@@ -58,6 +60,59 @@ namespace iwhisper
                     ua - ub);
 
             return s16_from_bits(result);
+        }
+
+        // ============================================================
+        // Explicit INT32 wrap helper for Torch int32 multiplication.
+        //
+        // Torch computes:
+        //
+        //     qk.int32 * multiplier.int32
+        //
+        // in INT32.  Production Whisper values are comfortably inside
+        // the range, but keeping modulo-2^32 behavior here makes the
+        // scalar reference deterministic even for boundary tests.
+        // ============================================================
+
+        static inline int32_t s32_from_bits(
+            uint32_t bits)
+        {
+            const int64_t value =
+                (bits & uint32_t{0x80000000u})
+                    ? static_cast<int64_t>(bits) -
+                          (int64_t{1} << 32)
+                    : static_cast<int64_t>(bits);
+
+            return static_cast<int32_t>(value);
+        }
+
+        static inline int32_t wrap_mul_s32_u8(
+            int32_t a,
+            uint8_t b)
+        {
+            const uint64_t product =
+                static_cast<uint64_t>(
+                    static_cast<uint32_t>(a)) *
+                static_cast<uint64_t>(b);
+
+            return s32_from_bits(
+                static_cast<uint32_t>(product));
+        }
+
+        static inline int16_t clamp_s16(
+            int32_t value)
+        {
+            if (value > 32767)
+            {
+                return static_cast<int16_t>(32767);
+            }
+
+            if (value < -32768)
+            {
+                return static_cast<int16_t>(-32768);
+            }
+
+            return static_cast<int16_t>(value);
         }
 
     } // namespace
@@ -123,14 +178,164 @@ namespace iwhisper
     }
 
     // ============================================================
-    // Integer shift-exp
+    // Fused QK^T + requantization + masked row maximum.
     //
     // Torch golden:
     //
-    //     x[mask] = INT16_MIN
+    //     qk = Q @ K^T                              # INT32
+    //     qk = Rshift(qk * multiplier, shift)       # INT32
+    //     qk = clamp(qk, INT16_MIN, INT16_MAX)      # INT16
+    //     qk[mask] = INT16_MIN
+    //     row_max_plus1 = qk.max(-1, keepdim=True) + 1
     //
-    //     x_max = x.max(dim=-1, keepdim=True).values + 1
-    //     x_sub = x - x_max
+    // Input:
+    //     q:          [B,H,Tq,D]  INT8
+    //     k:          [B,H,Tk,D]  INT8
+    //     mask:       [Tq,Tk]     BOOL, shared across B/H
+    //     multiplier: scalar      UINT8
+    //     shift:      scalar      INT8 semantics; negative -> 0
+    //
+    // Output:
+    //     qk_output:      [B,H,Tq,Tk] INT16
+    //     row_max_output: [B,H,Tq,1]  INT16, stores max + 1
+    //
+    // Masked lanes do not need their dot product evaluated because the
+    // Torch golden overwrites them with INT16_MIN before the reduction.
+    // ============================================================
+
+    void qk_requant_rowmax_scalar(
+        const int8_t *q,
+        const int8_t *k,
+        const bool *mask,
+        int16_t *qk_output,
+        int16_t *row_max_output,
+        int64_t batch,
+        int64_t heads,
+        int64_t q_length,
+        int64_t k_length,
+        int64_t head_dim,
+        uint8_t multiplier,
+        int32_t shift,
+        bool has_mask)
+    {
+        constexpr int16_t kInt16Min =
+            static_cast<int16_t>(-32768);
+
+        const uint32_t requant_shift =
+            shift > 0
+                ? static_cast<uint32_t>(shift)
+                : uint32_t{0};
+
+        for (int64_t b = 0; b < batch; ++b)
+        {
+            for (int64_t h = 0; h < heads; ++h)
+            {
+                const int64_t q_head_base =
+                    (b * heads + h) * q_length * head_dim;
+
+                const int64_t k_head_base =
+                    (b * heads + h) * k_length * head_dim;
+
+                const int64_t qk_head_base =
+                    (b * heads + h) * q_length * k_length;
+
+                const int64_t max_head_base =
+                    (b * heads + h) * q_length;
+
+                for (int64_t qi = 0;
+                     qi < q_length;
+                     ++qi)
+                {
+                    const int8_t *q_ptr =
+                        q + q_head_base + qi * head_dim;
+
+                    int16_t *qk_ptr =
+                        qk_output + qk_head_base + qi * k_length;
+
+                    int16_t row_max =
+                        kInt16Min;
+
+                    for (int64_t ki = 0;
+                         ki < k_length;
+                         ++ki)
+                    {
+                        const bool masked =
+                            has_mask &&
+                            mask[qi * k_length + ki];
+
+                        if (masked)
+                        {
+                            qk_ptr[ki] = kInt16Min;
+                            continue;
+                        }
+
+                        const int8_t *k_ptr =
+                            k + k_head_base + ki * head_dim;
+
+                        int32_t acc = 0;
+
+                        for (int64_t d = 0;
+                             d < head_dim;
+                             ++d)
+                        {
+                            acc +=
+                                static_cast<int32_t>(q_ptr[d]) *
+                                static_cast<int32_t>(k_ptr[d]);
+                        }
+
+                        // Torch:
+                        //     qk.mul(multiplier.int())
+                        // Both operands are INT32. Preserve INT32 wrapping
+                        // explicitly for deterministic boundary behavior.
+                        const int32_t scaled =
+                            wrap_mul_s32_u8(
+                                acc,
+                                multiplier);
+
+                        // Torch Rshift first clamps negative shift counts to
+                        // zero and returns zero for shifts >= 32.  The shared
+                        // helper implements the latter two cases directly.
+                        const int32_t requantized =
+                            iwhisper::fixedpoint::rounding_rshift(
+                                scaled,
+                                requant_shift);
+
+                        const int16_t qk_value =
+                            clamp_s16(requantized);
+
+                        qk_ptr[ki] = qk_value;
+
+                        if (qk_value > row_max)
+                        {
+                            row_max = qk_value;
+                        }
+                    }
+
+                    // Match Torch INT16:
+                    //     row_max_plus1 = row_max + 1
+                    // including 32767 -> -32768 wrapping.
+                    row_max_output[
+                        max_head_base + qi] =
+                        wrap_add_s16(
+                            row_max,
+                            int16_t{1});
+                }
+            }
+        }
+    }
+
+
+    // ============================================================
+    // Integer shift-exp with externally supplied row maximum.
+    //
+    // The preceding fused QK kernel already computes:
+    //
+    //     row_max_plus1 =
+    //         masked_qk.max(dim=-1, keepdim=True) + 1
+    //
+    // Torch golden for this stage:
+    //
+    //     x_sub = x - row_max_plus1
     //
     //     x_mul_fix =
     //         x_sub
@@ -151,31 +356,33 @@ namespace iwhisper
     //     x_exp[mask] = 0
     //     x_exp[x_sub > 0] = 0
     //
-    //     if frac_bits > 7:
-    //         x_exp =
-    //             x_exp.int()
-    //             >> (frac_bits - 7)
+    //         x_exp = x_exp >> (frac_bits - 7)
     //
     //     return x_exp.uint8()
     //
     // Input:
-    //     [B, H, Tq, Tk] INT16
+    //     input:         [B,H,Tq,Tk] INT16
+    //     row_max_plus1: [B,H,Tq,1]  INT16
     //
     // Mask:
-    //     [Tq, Tk] BOOL
-    //     shared across B/H
+    //     [Tq,Tk] BOOL, shared across B/H
     //
     // Output:
     //     [B, H, Tq, Tk] UINT8
     //
     // Important:
-    //     input is NOT modified.
+    //     [B,H,Tq,Tk] UINT8
+    //
+    // This is now a single O(Tk) pass per row.  Row-max reduction is
+    // intentionally not performed here.
     // ============================================================
 
     void shift_exp_scalar(
         const int16_t *input,
+        const int16_t *row_max_plus1,
         const bool *mask,
         uint8_t *output,
+        int32_t *row_sum_output,
         int64_t batch,
         int64_t heads,
         int64_t q_length,
@@ -183,9 +390,6 @@ namespace iwhisper
         int32_t frac_bits,
         bool has_mask)
     {
-        constexpr int16_t kInt16Min =
-            static_cast<int16_t>(-32768);
-
         const int32_t frac_scale =
             int32_t{1} << frac_bits;
 
@@ -199,6 +403,9 @@ namespace iwhisper
             {
                 const int64_t head_base =
                     (b * heads + h) * q_length * k_length;
+                
+                const int64_t max_head_base =
+                    (b * heads + h) * q_length;
 
                 for (int64_t qi = 0;
                      qi < q_length;
@@ -207,51 +414,9 @@ namespace iwhisper
                     const int64_t row_base =
                         head_base + qi * k_length;
 
-                    // ============================================
-                    // Pass 1:
-                    //     masked row maximum
-                    //
-                    // Torch first replaces masked elements with
-                    // INT16_MIN and then performs max().
-                    // ============================================
+                    const int16_t x_max = row_max_plus1[max_head_base + qi];
 
-                    int16_t row_max =
-                        kInt16Min;
-
-                    for (int64_t ki = 0;
-                         ki < k_length;
-                         ++ki)
-                    {
-                        const bool masked =
-                            has_mask &&
-                            mask[qi * k_length + ki];
-
-                        const int16_t value =
-                            masked
-                                ? kInt16Min
-                                : input[row_base + ki];
-
-                        if (value > row_max)
-                        {
-                            row_max = value;
-                        }
-                    }
-
-                    // Torch INT16:
-                    //
-                    //     x_max = row_max + 1
-                    //
-                    // Preserve INT16 wrap semantics.
-                    const int16_t x_max =
-                        wrap_add_s16(
-                            row_max,
-                            int16_t{1});
-
-                    // ============================================
-                    // Pass 2:
-                    //     subtract max
-                    //     approximate exp
-                    // ============================================
+                    int32_t row_sum = 0;
 
                     for (int64_t ki = 0;
                          ki < k_length;
@@ -264,42 +429,25 @@ namespace iwhisper
                             has_mask &&
                             mask[qi * k_length + ki];
 
-                        // Masked output is unconditionally zero.
-                        //
-                        // Torch computes intermediate values first
-                        // and overwrites them afterwards, but the
-                        // final result is identical.
+                        // Masked attention probability is always zero.
+                        // No remaining arithmetic is observable for this lane.
                         if (masked)
                         {
                             output[idx] = 0;
                             continue;
                         }
 
-                        const int16_t x =
-                            input[idx];
-
-                        // ----------------------------------------
-                        // x_sub = x - x_max
-                        //
-                        // Normally <= -1 because:
-                        //
-                        //     x_max = row_max + 1
-                        //
-                        // but INT16 wrap can make pathological
-                        // boundary cases positive.
-                        // ----------------------------------------
-
+                    
+                        // Torch INT16 subtraction wraps modulo 2^16.
                         const int16_t x_sub =
                             wrap_sub_s16(
-                                x,
+                                input[idx],
                                 x_max);
 
-                        // Torch eventually forces these lanes to 0:
-                        //
-                        //     x_exp[x_sub > 0] = 0
-                        //
-                        // so there is no need to evaluate their
-                        // exponential approximation.
+                        // Normally x_sub <= -1 because x_max stores
+                        // row_max + 1.  INT16 wrap at pathological
+                        // boundaries can make the result positive.
+                        // Torch forces those lanes to zero.
                         if (x_sub > 0)
                         {
                             output[idx] = 0;
@@ -309,18 +457,11 @@ namespace iwhisper
                         // ----------------------------------------
                         // x_mul_fix
                         //
-                        // log2(e) approximation:
+                        // log2(e) ~= 1 + 1/2 - 1/16 = 1.4375
                         //
-                        //     1 + 1/2 - 1/16
-                        //     = 1.4375
-                        //
-                        // Keep each add/sub in INT16 because Torch
-                        // performs this expression in INT16.
-                        //
-                        // Signed >> is arithmetic on our AArch64
-                        // deployment target.
+                        // Keep every add/sub in INT16 to reproduce
+                        // Torch's INT16 wrap semantics.
                         // ----------------------------------------
-
                         const int16_t half =
                             static_cast<int16_t>(
                                 x_sub >> 1);
@@ -339,25 +480,11 @@ namespace iwhisper
                                 add_half,
                                 sixteenth);
 
-                        // ----------------------------------------
-                        // Split:
-                        //
-                        //     x_mul_fix
-                        //       = integer * 2^frac_bits
-                        //         + fraction
-                        // ----------------------------------------
-
                         const int16_t x_mul_int =
                             static_cast<int16_t>(
                                 x_mul_fix >> frac_bits);
 
-                        // x_mul_int is derived from INT16 and
-                        // frac_bits, so this multiplication is
-                        // representable for the supported range.
-                        //
-                        // Use multiplication instead of signed
-                        // left shift to avoid relying on negative
-                        // signed-left-shift behavior in C++.
+                        // Avoid negative signed left-shift in C++.
                         const int16_t integer_part =
                             static_cast<int16_t>(
                                 static_cast<int32_t>(
@@ -368,31 +495,12 @@ namespace iwhisper
                             static_cast<int16_t>(
                                 x_mul_fix - integer_part);
 
-                        // For normal fixed-point decomposition:
-                        //
-                        //     0 <= x_mul_frac < 2^frac_bits
-                        //
-                        // therefore numerator is positive.
                         const int16_t exp_numerator =
                             static_cast<int16_t>(
                                 frac_scale +
                                 static_cast<int32_t>(
                                     x_mul_frac >> 1));
 
-                        // ----------------------------------------
-                        // Divide by 2^(-x_mul_int)
-                        //
-                        // Torch:
-                        //
-                        //     numerator >> (-x_mul_int)
-                        //
-                        // In ordinary operation x_mul_int <= 0.
-                        //
-                        // A severe INT16 wrap in x_mul_fix can,
-                        // however, make x_mul_int > 0. PyTorch's
-                        // negative right-shift count produces 0
-                        // here, so preserve that final behavior.
-                        // ----------------------------------------
 
                         int16_t x_exp;
 
@@ -412,6 +520,9 @@ namespace iwhisper
                             // produces zero for INT16.
                             if (exp_shift >= 16)
                             {
+                                // Equivalent to the Torch negative-shift-count
+                                // boundary behavior observed by the old scalar
+                                // differential test.
                                 x_exp = 0;
                             }
                             else
@@ -421,15 +532,6 @@ namespace iwhisper
                                         exp_numerator >> exp_shift);
                             }
                         }
-
-                        // ----------------------------------------
-                        // Torch converts higher-Q representations
-                        // back to Q1.7.
-                        //
-                        // Production I-Whisper currently uses:
-                        //
-                        //     frac_bits = 7
-                        // ----------------------------------------
 
                         if (frac_bits > 7)
                         {
@@ -448,7 +550,12 @@ namespace iwhisper
                                 static_cast<uint8_t>(
                                     x_exp);
                         }
+
+                        row_sum += static_cast<int32_t>(output[idx]);
                     }
+
+                    // row_sum store back
+                    row_sum_output[max_head_base + qi] = row_sum;
                 }
             }
         }

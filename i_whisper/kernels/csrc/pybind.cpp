@@ -196,20 +196,30 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         "I-Whisper QK^T scalar kernel",
         pybind11::arg("q"),
         pybind11::arg("k"));
-    
+
     m.def(
         "qk_simd",
         &qk_simd_torch,
         "I-Whisper QK^T SIMD kernel",
         pybind11::arg("q"),
         pybind11::arg("k"));
-    
+
+    m.def(
+        "qk_requant_rowmax_scalar",
+        &qk_requant_rowmax_scalar_torch,
+        "I-Whisper fused QK requantization and row-max scalar kernel",
+        pybind11::arg("q"),
+        pybind11::arg("k"),
+        pybind11::arg("mask"),
+        pybind11::arg("multiplier"),
+        pybind11::arg("shift"));
+
     m.def(
         "shift_exp_scalar",
         &shift_exp_scalar_torch,
-        "I-Whisper shift and exp scalar kernel",
+        "I-Whisper shift-exp + row-sum scalar kernel",
         pybind11::arg("input"),
+        pybind11::arg("row_max_plus1"),
         pybind11::arg("mask"),
         pybind11::arg("frac_bits"));
-
 }
