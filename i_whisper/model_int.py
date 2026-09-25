@@ -855,15 +855,45 @@ class MultiHeadAttention_int(nn.Module):
         else:
             raise NotImplementedError(f"Backend {self.backend} is not implemented.")
         
+        if self.backend == "torch":
+            out = Batch_Head_u8s8s32_GeMM(qk_exp, v)  # int32 tensor
+            sum_inv_mul = Fast_Inverse_Square_Root(qk_exp_sum, self.rsqrt_offset, Newton_iter=2)
+            out = Rshift(out.mul(sum_inv_mul).int(), self.rsqrt_offset)
+            out = Rshift(out.mul(sum_inv_mul).int(), self.rsqrt_offset)
+            out = Rshift(out.mul(self.av_req_multiplier.int()).int(), self.av_req_shiftmount)
+            out = out.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
+            out = out.permute(0, 2, 1, 3).flatten(start_dim=2)
+        elif self.backend == "scalar":
+            out = _C.pv_norm_requant_scalar(
+                qk_exp.contiguous(),
+                v.contiguous(),
+                qk_exp_sum.contiguous(),
+                self.av_req_multiplier,
+                self.av_req_shiftmount,
+                self.rsqrt_offset,
+            )
+        elif self.backend == "check":
+            out_ref = Batch_Head_u8s8s32_GeMM(qk_exp, v)  # int32 tensor
+            sum_inv_mul_ref = Fast_Inverse_Square_Root(qk_exp_sum, self.rsqrt_offset, Newton_iter=2)
+            out_ref = Rshift(out_ref.mul(sum_inv_mul_ref).int(), self.rsqrt_offset)
+            out_ref = Rshift(out_ref.mul(sum_inv_mul_ref).int(), self.rsqrt_offset)
+            out_ref = Rshift(out_ref.mul(self.av_req_multiplier.int()).int(), self.av_req_shiftmount)
+            out_ref = out_ref.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
+            out_ref = out_ref.permute(0, 2, 1, 3).flatten(start_dim=2)
 
-        out = Batch_Head_u8s8s32_GeMM(qk_exp, v)  # int32 tensor
-        sum_inv_mul = Fast_Inverse_Square_Root(qk_exp_sum, self.rsqrt_offset, Newton_iter=2)
-        out = Rshift(out.mul(sum_inv_mul).int(), self.rsqrt_offset)
-        out = Rshift(out.mul(sum_inv_mul).int(), self.rsqrt_offset)
-        out = Rshift(out.mul(self.av_req_multiplier.int()).int(), self.av_req_shiftmount)
-        out = out.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
+            out = _C.pv_norm_requant_scalar(
+                qk_exp.contiguous(),
+                v.contiguous(),
+                qk_exp_sum.contiguous(),
+                self.av_req_multiplier,
+                self.av_req_shiftmount,
+                self.rsqrt_offset,
+            )
+            assert torch.equal(out, out_ref), "PV normalize/requant mismatch"
+        else:
+            raise NotImplementedError(f"Backend {self.backend} is not implemented.")
 
-        return out.permute(0, 2, 1, 3).flatten(start_dim=2)
+        return out
     
     @staticmethod
     def copy_param(quant_layer):

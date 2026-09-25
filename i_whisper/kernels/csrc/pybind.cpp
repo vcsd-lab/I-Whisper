@@ -222,4 +222,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         pybind11::arg("row_max_plus1"),
         pybind11::arg("mask"),
         pybind11::arg("frac_bits"));
+
+    m.def(
+        "pv_scalar",
+        &pv_scalar_torch,
+        "I-Whisper UINT8 x INT8 P@V scalar accumulation kernel",
+        pybind11::arg("p"),
+        pybind11::arg("v"));
+    
+
+    m.def(
+        "pv_norm_requant_scalar",
+        &pv_norm_requant_scalar_torch,
+        "I-Whisper fused P@V + normalize + AV requant scalar kernel",
+        pybind11::arg("p"),
+        pybind11::arg("v"),
+        pybind11::arg("row_sum"),
+        pybind11::arg("av_multiplier"),
+        pybind11::arg("av_shift"),
+        pybind11::arg("rsqrt_offset"));
 }

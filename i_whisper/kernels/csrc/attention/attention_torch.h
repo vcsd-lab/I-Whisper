@@ -28,3 +28,24 @@ shift_exp_scalar_torch(
     const torch::Tensor &row_max_plus1,
     const std::optional<torch::Tensor> &mask,
     const torch::Tensor &frac_bits);
+
+
+
+torch::Tensor pv_scalar_torch(
+    const torch::Tensor &p,
+    const torch::Tensor &v);
+
+
+
+
+torch::Tensor pv_norm_requant_scalar_torch(
+    const torch::Tensor &p,
+    const torch::Tensor &v,
+    const torch::Tensor &row_sum,
+    const torch::Tensor &av_multiplier,
+    const torch::Tensor &av_shift,
+    int64_t rsqrt_offset);
+
+
+
+

@@ -296,3 +296,214 @@ shift_exp_scalar_torch(
 
     return std::make_tuple(output, row_sum_output);
 }
+
+
+
+
+
+torch::Tensor pv_scalar_torch(
+    const torch::Tensor &p,
+    const torch::Tensor &v)
+{
+    // --------------------------------
+    // CHECK: Input types / placement
+    // --------------------------------
+    iwhisper::checktensor::CHECK_CPU_UINT8(
+        p,
+        "p");
+
+    iwhisper::checktensor::CHECK_CPU_INT8(
+        v,
+        "v");
+
+    // --------------------------------
+    // CHECK: Shapes
+    //
+    // p: [B,H,Tq,Tk]
+    // v: [B,H,D,Tk]
+    // --------------------------------
+    TORCH_CHECK(
+        p.dim() == 4,
+        "p must be [B,H,Tq,Tk]");
+
+    TORCH_CHECK(
+        v.dim() == 4,
+        "v must be [B,H,D,Tk]");
+
+    TORCH_CHECK(
+        p.size(0) == v.size(0),
+        "batch mismatch");
+
+    TORCH_CHECK(
+        p.size(1) == v.size(1),
+        "head count mismatch");
+
+    TORCH_CHECK(
+        p.size(3) == v.size(3),
+        "key length mismatch");
+
+    const int64_t B =
+        p.size(0);
+
+    const int64_t H =
+        p.size(1);
+
+    const int64_t Tq =
+        p.size(2);
+
+    const int64_t Tk =
+        p.size(3);
+
+    const int64_t D =
+        v.size(2);
+
+    auto output =
+        torch::empty(
+            {
+                B,
+                H,
+                Tq,
+                D,
+            },
+            p.options().dtype(
+                torch::kInt32));
+
+    iwhisper::pv_scalar(
+        p.data_ptr<uint8_t>(),
+        v.data_ptr<int8_t>(),
+        output.data_ptr<int32_t>(),
+        B,
+        H,
+        Tq,
+        Tk,
+        D);
+
+    return output;
+}
+
+
+
+
+torch::Tensor pv_norm_requant_scalar_torch(
+    const torch::Tensor &p,
+    const torch::Tensor &v,
+    const torch::Tensor &row_sum,
+    const torch::Tensor &av_multiplier,
+    const torch::Tensor &av_shift,
+    int64_t rsqrt_offset)
+{
+    // --------------------------------
+    // CHECK: dtype / device / contiguity
+    // --------------------------------
+    iwhisper::checktensor::CHECK_CPU_UINT8(
+        p,
+        "p");
+
+    iwhisper::checktensor::CHECK_CPU_INT8(
+        v,
+        "v");
+
+    iwhisper::checktensor::CHECK_CPU_INT32(
+        row_sum,
+        "row_sum");
+
+    iwhisper::checktensor::CHECK_CPU_UINT8(
+        av_multiplier,
+        "av_multiplier");
+
+    iwhisper::checktensor::CHECK_CPU_INT8(
+        av_shift,
+        "av_shift");
+
+    // --------------------------------
+    // CHECK: shapes
+    // --------------------------------
+    TORCH_CHECK(
+        p.dim() == 4,
+        "p must be [B,H,Tq,Tk]");
+
+    TORCH_CHECK(
+        v.dim() == 4,
+        "v must be [B,H,D,Tk]");
+
+    TORCH_CHECK(
+        row_sum.dim() == 4,
+        "row_sum must be [B,H,Tq,1]");
+
+    TORCH_CHECK(
+        p.size(0) == v.size(0)
+        && p.size(0) == row_sum.size(0),
+        "batch mismatch");
+
+    TORCH_CHECK(
+        p.size(1) == v.size(1)
+        && p.size(1) == row_sum.size(1),
+        "head count mismatch");
+
+    TORCH_CHECK(
+        p.size(2) == row_sum.size(2),
+        "query length mismatch");
+
+    TORCH_CHECK(
+        row_sum.size(3) == 1,
+        "row_sum must have last dimension 1");
+
+    TORCH_CHECK(
+        p.size(3) == v.size(3),
+        "key length mismatch");
+
+    TORCH_CHECK(
+        av_multiplier.numel() == 1,
+        "av_multiplier must be scalar");
+
+    TORCH_CHECK(
+        av_shift.numel() == 1,
+        "av_shift must be scalar");
+
+    TORCH_CHECK(
+        rsqrt_offset >= 0
+        && rsqrt_offset <= 29,
+        "rsqrt_offset must be in [0,29]");
+
+    const int64_t B =
+        p.size(0);
+
+    const int64_t H =
+        p.size(1);
+
+    const int64_t Tq =
+        p.size(2);
+
+    const int64_t Tk =
+        p.size(3);
+
+    const int64_t D =
+        v.size(2);
+
+    auto output =
+        torch::empty(
+            {
+                B,
+                Tq,
+                H * D,
+            },
+            p.options().dtype(
+                torch::kInt8));
+
+    iwhisper::pv_norm_requant_scalar(
+        p.data_ptr<uint8_t>(),
+        v.data_ptr<int8_t>(),
+        row_sum.data_ptr<int32_t>(),
+        av_multiplier.data_ptr<uint8_t>()[0],
+        av_shift.data_ptr<int8_t>()[0],
+        static_cast<uint32_t>(
+            rsqrt_offset),
+        output.data_ptr<int8_t>(),
+        B,
+        H,
+        Tq,
+        Tk,
+        D);
+
+    return output;
+}

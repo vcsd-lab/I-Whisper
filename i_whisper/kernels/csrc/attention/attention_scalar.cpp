@@ -1,6 +1,9 @@
 #include "attention.h"
+#include "../layernorm/layernorm.h"
 
 #include <cstdint>
+#include <algorithm>
+#include <stdexcept>
 
 #include "../common/fixedpoint.h"
 
@@ -9,6 +12,17 @@ namespace iwhisper
 
     namespace
     {
+        static inline int32_t wrap_mul_s32_attn(
+            int32_t a,
+            int32_t b)
+        {
+            return static_cast<int32_t>(
+                static_cast<uint32_t>(a)
+                * static_cast<uint32_t>(b));
+        }
+
+
+
 
         // ============================================================
         // Explicit INT16 wrap helpers.
@@ -314,8 +328,7 @@ namespace iwhisper
                     // Match Torch INT16:
                     //     row_max_plus1 = row_max + 1
                     // including 32767 -> -32768 wrapping.
-                    row_max_output[
-                        max_head_base + qi] =
+                    row_max_output[max_head_base + qi] =
                         wrap_add_s16(
                             row_max,
                             int16_t{1});
@@ -323,7 +336,6 @@ namespace iwhisper
             }
         }
     }
-
 
     // ============================================================
     // Integer shift-exp with externally supplied row maximum.
@@ -403,7 +415,7 @@ namespace iwhisper
             {
                 const int64_t head_base =
                     (b * heads + h) * q_length * k_length;
-                
+
                 const int64_t max_head_base =
                     (b * heads + h) * q_length;
 
@@ -437,7 +449,6 @@ namespace iwhisper
                             continue;
                         }
 
-                    
                         // Torch INT16 subtraction wraps modulo 2^16.
                         const int16_t x_sub =
                             wrap_sub_s16(
@@ -501,7 +512,6 @@ namespace iwhisper
                                 static_cast<int32_t>(
                                     x_mul_frac >> 1));
 
-
                         int16_t x_exp;
 
                         if (x_mul_int > 0)
@@ -560,5 +570,282 @@ namespace iwhisper
             }
         }
     }
+
+    // ============================================================
+    // P @ V scalar accumulation
+    //
+    // p:
+    //     [B,H,Tq,Tk] UINT8
+    //
+    // v:
+    //     [B,H,D,Tk] INT8
+    //
+    // output:
+    //     [B,H,Tq,D] INT32
+    //
+    // Torch golden:
+    //
+    //     p.to(torch.int32)
+    //       @ v.to(torch.int32).transpose(-1, -2)
+    //
+    // Keep the accumulator as uint32 bits so addition wraps
+    // modulo 2^32 without invoking C++ signed-overflow UB.
+    // ============================================================
+    void pv_scalar(
+        const uint8_t *p,
+        const int8_t *v,
+        int32_t *output,
+        int64_t batch,
+        int64_t heads,
+        int64_t q_length,
+        int64_t k_length,
+        int64_t head_dim)
+    {
+        for (int64_t b = 0;
+             b < batch;
+             ++b)
+        {
+            for (int64_t h = 0;
+                 h < heads;
+                 ++h)
+            {
+                const int64_t p_head_base =
+                    (b * heads + h) * q_length * k_length;
+
+                const int64_t v_head_base =
+                    (b * heads + h) * head_dim * k_length;
+
+                const int64_t out_head_base =
+                    (b * heads + h) * q_length * head_dim;
+
+                for (int64_t qi = 0;
+                     qi < q_length;
+                     ++qi)
+                {
+                    const uint8_t *p_row =
+                        p + p_head_base + qi * k_length;
+
+                    int32_t *out_row =
+                        output + out_head_base + qi * head_dim;
+
+                    for (int64_t d = 0;
+                         d < head_dim;
+                         ++d)
+                    {
+                        const int8_t *v_row =
+                            v + v_head_base + d * k_length;
+
+                        uint32_t acc_bits = 0;
+
+                        for (int64_t ki = 0;
+                             ki < k_length;
+                             ++ki)
+                        {
+                            const int32_t product =
+                                static_cast<int32_t>(
+                                    p_row[ki]) *
+                                static_cast<int32_t>(
+                                    v_row[ki]);
+
+                            acc_bits +=
+                                static_cast<uint32_t>(
+                                    product);
+                        }
+
+                        // Same two's-complement bit pattern as Torch INT32.
+                        out_row[d] =
+                            static_cast<int32_t>(
+                                acc_bits);
+                    }
+                }
+            }
+        }
+    }
+
+
+
+
+
+    // ============================================================
+    // Fused P @ V + normalize + AV requant + final layout
+    //
+    // Torch golden:
+    //
+    // out = P.int32 @ V.int32.transpose(-1, -2)
+    // inv = Fast_Inverse_Square_Root(row_sum, rsqrt_offset, 2)
+    // out = Rshift(out * inv, rsqrt_offset)
+    // out = Rshift(out * inv, rsqrt_offset)
+    // out = Rshift(out * av_multiplier, av_shift)
+    // out = clamp(out, -127, 127).int8()
+    // out = out.permute(0, 2, 1, 3).flatten(2)
+    //
+    // The INT32 P@V tensor is never materialized.
+    // ============================================================
+    void pv_norm_requant_scalar(
+        const uint8_t *p,
+        const int8_t *v,
+        const int32_t *row_sum,
+        uint8_t av_multiplier,
+        int8_t av_shift,
+        uint32_t rsqrt_offset,
+        int8_t *output,
+        int64_t batch,
+        int64_t heads,
+        int64_t q_length,
+        int64_t k_length,
+        int64_t head_dim)
+    {
+        constexpr int32_t kActMin = -127;
+        constexpr int32_t kActMax = 127;
+
+        const uint32_t requant_shift =
+            static_cast<uint32_t>(
+                std::clamp<int32_t>(
+                    static_cast<int32_t>(av_shift),
+                    0,
+                    32));
+
+        for (int64_t b = 0;
+             b < batch;
+             ++b)
+        {
+            for (int64_t h = 0;
+                 h < heads;
+                 ++h)
+            {
+                const int64_t p_head_base =
+                    (b * heads + h)
+                    * q_length
+                    * k_length;
+
+                const int64_t v_head_base =
+                    (b * heads + h)
+                    * head_dim
+                    * k_length;
+
+                const int64_t sum_head_base =
+                    (b * heads + h)
+                    * q_length;
+
+                for (int64_t qi = 0;
+                     qi < q_length;
+                     ++qi)
+                {
+                    const int32_t sum =
+                        row_sum[
+                            sum_head_base
+                            + qi];
+
+                    if (sum < 0)
+                    {
+                        throw std::invalid_argument(
+                            "row_sum must be non-negative");
+                    }
+
+                    // One inverse denominator per attention row.
+                    int32_t inv = 0;
+
+                    iwhisper::layernorm32_rsqrt_scalar(
+                        &sum,
+                        &inv,
+                        1,
+                        rsqrt_offset);
+
+                    const uint8_t *p_row =
+                        p
+                        + p_head_base
+                        + qi * k_length;
+
+                    for (int64_t d = 0;
+                         d < head_dim;
+                         ++d)
+                    {
+                        const int8_t *v_row =
+                            v
+                            + v_head_base
+                            + d * k_length;
+
+                        // Explicit modulo-2^32 accumulation.
+                        uint32_t acc_bits = 0;
+
+                        for (int64_t ki = 0;
+                             ki < k_length;
+                             ++ki)
+                        {
+                            const int32_t product =
+                                static_cast<int32_t>(
+                                    p_row[ki])
+                                *
+                                static_cast<int32_t>(
+                                    v_row[ki]);
+
+                            acc_bits +=
+                                static_cast<uint32_t>(
+                                    product);
+                        }
+
+                        int32_t value =
+                            static_cast<int32_t>(
+                                acc_bits);
+
+                        // Divide by sum(E) by multiplying twice by
+                        // the Q(rsqrt_offset) inverse square root.
+                        value =
+                            iwhisper::fixedpoint::rounding_rshift(
+                                wrap_mul_s32_attn(
+                                    value,
+                                    inv),
+                                rsqrt_offset);
+
+                        value =
+                            iwhisper::fixedpoint::rounding_rshift(
+                                wrap_mul_s32_attn(
+                                    value,
+                                    inv),
+                                rsqrt_offset);
+
+                        // Final AV requantization.
+                        value =
+                            iwhisper::fixedpoint::rounding_rshift(
+                                wrap_mul_s32_attn(
+                                    value,
+                                    static_cast<int32_t>(
+                                        av_multiplier)),
+                                requant_shift);
+
+                        value =
+                            std::clamp(
+                                value,
+                                kActMin,
+                                kActMax);
+
+                        // Directly emit final Whisper attention layout:
+                        // [B,Tq,H*D].
+                        const int64_t out_index =
+                            (b * q_length + qi)
+                                * (heads * head_dim)
+                            + h * head_dim
+                            + d;
+
+                        output[out_index] =
+                            static_cast<int8_t>(
+                                value);
+                    }
+                }
+            }
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+
+
 
 } // namespace iwhisper

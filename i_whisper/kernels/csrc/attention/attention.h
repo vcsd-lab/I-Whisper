@@ -58,4 +58,70 @@ void shift_exp_scalar(
     int32_t frac_bits,
     bool has_mask);
 
+
+
+
+// ============================================================
+// P @ V scalar accumulation.
+//
+// Input:
+//     p:      [B,H,Tq,Tk] UINT8
+//     v:      [B,H,D,Tk]  INT8
+//
+// Output:
+//     output: [B,H,Tq,D]  INT32
+//
+// This matches:
+//
+//     p.int32 @ v.int32.transpose(-1, -2)
+//
+// Accumulation uses explicit modulo-2^32 behavior to match
+// Torch INT32 matmul even in overflow stress tests.
+// ============================================================
+void pv_scalar(
+    const uint8_t *p,
+    const int8_t *v,
+    int32_t *output,
+    int64_t batch,
+    int64_t heads,
+    int64_t q_length,
+    int64_t k_length,
+    int64_t head_dim);
+
+
+
+
+// ============================================================
+// Fused P @ V + softmax normalization + AV requant + layout.
+//
+// Inputs:
+//     p:              [B,H,Tq,Tk] UINT8
+//     v:              [B,H,D,Tk]  INT8
+//     row_sum:        [B,H,Tq,1]  INT32
+//     av_multiplier:  scalar UINT8
+//     av_shift:       scalar INT8
+//
+// Output:
+//     output:          [B,Tq,H*D] INT8
+//
+// For each (b,h,q), rsqrt(row_sum) is computed once and reused
+// for all D output channels.
+// ============================================================
+void pv_norm_requant_scalar(
+    const uint8_t *p,
+    const int8_t *v,
+    const int32_t *row_sum,
+    uint8_t av_multiplier,
+    int8_t av_shift,
+    uint32_t rsqrt_offset,
+    int8_t *output,
+    int64_t batch,
+    int64_t heads,
+    int64_t q_length,
+    int64_t k_length,
+    int64_t head_dim);
+
+
+
+
 }

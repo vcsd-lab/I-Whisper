@@ -25,9 +25,7 @@ from .modules.functional import (
     Fast_Inverse_Square_Root,
     Batch_Head_s8s8s32_GeMM,
     Batch_Head_u8s8s32_GeMM,
-    int_bit_length,
-    build_rsqrt_lut,
-    LUT_Based_Inverse_Square_Root
+    int_bit_length
 )
 from .modules.linear import Linear8, Linear32
 from .model_int import (GELU_int, LayerNorm_int, Conv1d_int, MultiHeadAttention_int, ResidualAttentionBlock_int, AudioEncoder_int, TextDecoder_int, Whisper_int)
@@ -477,7 +475,6 @@ class LayerNorm_quantized(nn.LayerNorm):
             var_q = torch.sum((Rshift(dev_square_q, renorm_shmnt)), dim=-1, keepdim=True).int()
             var_q = (mul_by_shift_multiplier(var_q, norm_mul) >> norm_shmnt).int() # reduce by mul & rshift, avoid division
             invstd_q = Fast_Inverse_Square_Root(var_q, self.offset, 2) # this is in fixed point q12.20 format
-            # invstd_q = LUT_Based_Inverse_Square_Root(var_q, self.rsqrt_lut, self.offset, self.lut_bits, Newton_iter=2) # this is in fixed point q12.20 format
             x_norm = ((x_q - mean_q) * invstd_q)
 
             # x_norm_save = x_norm.to('cpu').numpy()
