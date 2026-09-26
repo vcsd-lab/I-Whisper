@@ -784,11 +784,22 @@ class MultiHeadAttention_int(nn.Module):
                 self.qk_req_shiftmount
             )
         
+        elif self.backend == "simd":
+            q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
+            k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
+            qk, qk_row_max = _C.qk_requant_rowmax_simd(
+                q.contiguous(),
+                k.contiguous(),
+                attn_mask,
+                self.qk_req_multiplier,
+                self.qk_req_shiftmount
+            )
+        
         elif self.backend == "check":
             q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
             k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
 
-            qk, qk_row_max = _C.qk_requant_rowmax_scalar(
+            qk, qk_row_max = _C.qk_requant_rowmax_simd(
                 q.contiguous(),
                 k.contiguous(),
                 attn_mask,
@@ -837,13 +848,20 @@ class MultiHeadAttention_int(nn.Module):
                 attn_mask,
                 self.qk_frac_bits,
             )
+        elif self.backend == "simd":
+            qk_exp, qk_exp_sum = _C.shift_exp_simd(
+                qk,
+                qk_row_max,
+                attn_mask,
+                self.qk_frac_bits,
+            )
         elif self.backend == "check":
             qk_exp_ref, qk_exp_ref_sum = self.shift_exp(
                 qk,
                 qk_row_max,
                 attn_mask,
             )
-            qk_exp, qk_exp_sum = _C.shift_exp_scalar(
+            qk_exp, qk_exp_sum = _C.shift_exp_simd(
                 qk,
                 qk_row_max,
                 attn_mask,
@@ -872,6 +890,15 @@ class MultiHeadAttention_int(nn.Module):
                 self.av_req_shiftmount,
                 self.rsqrt_offset,
             )
+        elif self.backend == "simd":
+            out = _C.pv_norm_requant_simd(
+                qk_exp.contiguous(),
+                v.contiguous(),
+                qk_exp_sum.contiguous(),
+                self.av_req_multiplier,
+                self.av_req_shiftmount,
+                self.rsqrt_offset,
+            )
         elif self.backend == "check":
             out_ref = Batch_Head_u8s8s32_GeMM(qk_exp, v)  # int32 tensor
             sum_inv_mul_ref = Fast_Inverse_Square_Root(qk_exp_sum, self.rsqrt_offset, Newton_iter=2)
@@ -881,7 +908,7 @@ class MultiHeadAttention_int(nn.Module):
             out_ref = out_ref.clamp(min=-self.act_range, max=self.act_range).to(torch.int8)
             out_ref = out_ref.permute(0, 2, 1, 3).flatten(start_dim=2)
 
-            out = _C.pv_norm_requant_scalar(
+            out = _C.pv_norm_requant_simd(
                 qk_exp.contiguous(),
                 v.contiguous(),
                 qk_exp_sum.contiguous(),

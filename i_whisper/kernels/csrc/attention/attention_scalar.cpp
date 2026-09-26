@@ -17,12 +17,8 @@ namespace iwhisper
             int32_t b)
         {
             return static_cast<int32_t>(
-                static_cast<uint32_t>(a)
-                * static_cast<uint32_t>(b));
+                static_cast<uint32_t>(a) * static_cast<uint32_t>(b));
         }
-
-
-
 
         // ============================================================
         // Explicit INT16 wrap helpers.
@@ -662,10 +658,6 @@ namespace iwhisper
         }
     }
 
-
-
-
-
     // ============================================================
     // Fused P @ V + normalize + AV requant + final layout
     //
@@ -714,27 +706,20 @@ namespace iwhisper
                  ++h)
             {
                 const int64_t p_head_base =
-                    (b * heads + h)
-                    * q_length
-                    * k_length;
+                    (b * heads + h) * q_length * k_length;
 
                 const int64_t v_head_base =
-                    (b * heads + h)
-                    * head_dim
-                    * k_length;
+                    (b * heads + h) * head_dim * k_length;
 
                 const int64_t sum_head_base =
-                    (b * heads + h)
-                    * q_length;
+                    (b * heads + h) * q_length;
 
                 for (int64_t qi = 0;
                      qi < q_length;
                      ++qi)
                 {
                     const int32_t sum =
-                        row_sum[
-                            sum_head_base
-                            + qi];
+                        row_sum[sum_head_base + qi];
 
                     if (sum < 0)
                     {
@@ -752,18 +737,14 @@ namespace iwhisper
                         rsqrt_offset);
 
                     const uint8_t *p_row =
-                        p
-                        + p_head_base
-                        + qi * k_length;
+                        p + p_head_base + qi * k_length;
 
                     for (int64_t d = 0;
                          d < head_dim;
                          ++d)
                     {
                         const int8_t *v_row =
-                            v
-                            + v_head_base
-                            + d * k_length;
+                            v + v_head_base + d * k_length;
 
                         // Explicit modulo-2^32 accumulation.
                         uint32_t acc_bits = 0;
@@ -774,8 +755,7 @@ namespace iwhisper
                         {
                             const int32_t product =
                                 static_cast<int32_t>(
-                                    p_row[ki])
-                                *
+                                    p_row[ki]) *
                                 static_cast<int32_t>(
                                     v_row[ki]);
 
@@ -822,10 +802,7 @@ namespace iwhisper
                         // Directly emit final Whisper attention layout:
                         // [B,Tq,H*D].
                         const int64_t out_index =
-                            (b * q_length + qi)
-                                * (heads * head_dim)
-                            + h * head_dim
-                            + d;
+                            (b * q_length + qi) * (heads * head_dim) + h * head_dim + d;
 
                         output[out_index] =
                             static_cast<int8_t>(
@@ -835,17 +812,5 @@ namespace iwhisper
             }
         }
     }
-
-
-
-
-
-
-
-
-
-
-
-
 
 } // namespace iwhisper

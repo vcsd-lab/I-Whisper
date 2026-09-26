@@ -197,7 +197,7 @@ from i_whisper.model_int import set_residual_backend, set_layernorm_backend, set
 set_residual_backend(model, backend="simd", logger=logger)  # set backend for ResidualAttention
 set_layernorm_backend(model, backend="simd", logger=logger)  # set backend for LayerNorm layers
 set_gelu_backend(model, backend="simd", logger=logger)  # set backend for GELU layers
-set_attention_backend(model, backend="scalar", logger=logger)  # set backend for Attention layers
+set_attention_backend(model, backend="simd", logger=logger)  # set backend for Attention layers
 
 
 if args.test:

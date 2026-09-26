@@ -114,12 +114,13 @@ torch::Tensor qk_simd_torch(
 }
 
 std::tuple<torch::Tensor, torch::Tensor>
-qk_requant_rowmax_scalar_torch(
+qk_requant_rowmax_torch_impl(
     const torch::Tensor &q,
     const torch::Tensor &k,
     const std::optional<torch::Tensor> &mask,
     const torch::Tensor &multiplier,
-    const torch::Tensor &shift)
+    const torch::Tensor &shift,
+    iwhisper::backend::ArmBackend backend)
 {
     // --------------------------------
     // CHECK: Input types requirements
@@ -181,20 +182,46 @@ qk_requant_rowmax_scalar_torch(
         static_cast<int32_t>(
             shift.data_ptr<int8_t>()[0]);
 
-    iwhisper::qk_requant_rowmax_scalar(
-        q.data_ptr<int8_t>(),
-        k.data_ptr<int8_t>(),
-        mask_ptr,
-        qk_output.data_ptr<int16_t>(),
-        row_max_output.data_ptr<int16_t>(),
-        B,
-        H,
-        Tq,
-        Tk,
-        D,
-        multiplier_value,
-        shift_value,
-        has_mask);
+    switch (backend)
+    {
+    case iwhisper::backend::ArmBackend::Scalar:
+        iwhisper::qk_requant_rowmax_scalar(
+            q.data_ptr<int8_t>(),
+            k.data_ptr<int8_t>(),
+            mask_ptr,
+            qk_output.data_ptr<int16_t>(),
+            row_max_output.data_ptr<int16_t>(),
+            B,
+            H,
+            Tq,
+            Tk,
+            D,
+            multiplier_value,
+            shift_value,
+            has_mask);
+        break;
+    case iwhisper::backend::ArmBackend::SIMD:
+        iwhisper::qk_requant_rowmax_simd(
+            q.data_ptr<int8_t>(),
+            k.data_ptr<int8_t>(),
+            mask_ptr,
+            qk_output.data_ptr<int16_t>(),
+            row_max_output.data_ptr<int16_t>(),
+            B,
+            H,
+            Tq,
+            Tk,
+            D,
+            multiplier_value,
+            shift_value,
+            has_mask);
+        break;
+    default:
+        TORCH_CHECK(
+            false,
+            "Unsupported backend");
+        break;
+    }
 
     return std::make_tuple(
         qk_output,
@@ -202,11 +229,46 @@ qk_requant_rowmax_scalar_torch(
 }
 
 std::tuple<torch::Tensor, torch::Tensor>
-shift_exp_scalar_torch(
+qk_requant_rowmax_scalar_torch(
+    const torch::Tensor &q,
+    const torch::Tensor &k,
+    const std::optional<torch::Tensor> &mask,
+    const torch::Tensor &multiplier,
+    const torch::Tensor &shift)
+{
+    return qk_requant_rowmax_torch_impl(
+        q,
+        k,
+        mask,
+        multiplier,
+        shift,
+        iwhisper::backend::ArmBackend::Scalar);
+}
+
+std::tuple<torch::Tensor, torch::Tensor>
+qk_requant_rowmax_simd_torch(
+    const torch::Tensor &q,
+    const torch::Tensor &k,
+    const std::optional<torch::Tensor> &mask,
+    const torch::Tensor &multiplier,
+    const torch::Tensor &shift)
+{
+    return qk_requant_rowmax_torch_impl(
+        q,
+        k,
+        mask,
+        multiplier,
+        shift,
+        iwhisper::backend::ArmBackend::SIMD);
+}
+
+std::tuple<torch::Tensor, torch::Tensor>
+shift_exp_torch_impl(
     const torch::Tensor &input,
     const torch::Tensor &row_max_plus1,
     const std::optional<torch::Tensor> &mask,
-    const torch::Tensor &frac_bits)
+    const torch::Tensor &frac_bits,
+    iwhisper::backend::ArmBackend backend)
 {
     // --------------------------------
     // CHECK: Input types requirements
@@ -218,7 +280,9 @@ shift_exp_scalar_torch(
     // --------------------------------
     // CHECK: Input shapes requirements
     // --------------------------------
-    TORCH_CHECK(input.dim() == 4, "input must be [B,H,Tq,Tk]");
+    TORCH_CHECK(
+        input.dim() == 4,
+        "input must be [B,H,Tq,Tk]");
     TORCH_CHECK(
         row_max_plus1.dim() == 4,
         "row_max_plus1 must be [B,H,Tq,1]");
@@ -229,25 +293,14 @@ shift_exp_scalar_torch(
     const int64_t k_length = input.size(3);
 
     TORCH_CHECK(
-        row_max_plus1.size(0) == batch,
+        row_max_plus1.size(0) == batch && row_max_plus1.size(1) == heads && row_max_plus1.size(2) == q_length && row_max_plus1.size(3) == 1,
         "row_max_plus1.size(0) must equal input.size(0)");
-    TORCH_CHECK(
-        row_max_plus1.size(1) == heads,
-        "row_max_plus1.size(1) must equal input.size(1)");
-    TORCH_CHECK(
-        row_max_plus1.size(2) == q_length,
-        "row_max_plus1.size(2) must equal input.size(2)");
-    TORCH_CHECK(
-        row_max_plus1.size(3) == 1,
-        "row_max_plus1.size(3) must be 1");
 
     TORCH_CHECK(
         frac_bits.numel() == 1,
         "frac_bits must be a scalar");
-
     const int32_t frac_bits_item =
         frac_bits.data_ptr<int32_t>()[0];
-
     TORCH_CHECK(
         frac_bits_item > 0 && frac_bits_item < 14,
         "frac_bits must be in [1, 14)");
@@ -260,15 +313,9 @@ shift_exp_scalar_torch(
         const torch::Tensor &m = mask.value();
 
         iwhisper::checktensor::CHECK_CPU_BOOL(m, "mask");
-        TORCH_CHECK(m.dim() == 2, "mask must be [Tq,Tk]");
-
         TORCH_CHECK(
-            m.size(0) == q_length,
-            "mask.size(0) must equal input.size(2)");
-
-        TORCH_CHECK(
-            m.size(1) == k_length,
-            "mask.size(1) must equal input.size(3)");
+            m.dim() == 2 && m.size(0) == q_length && m.size(1) == k_length,
+            "mask must be [Tq,Tk]");
 
         mask_ptr = m.data_ptr<bool>();
     }
@@ -276,34 +323,85 @@ shift_exp_scalar_torch(
     auto output = torch::empty(
         {batch, heads, q_length, k_length},
         input.options().dtype(torch::kUInt8));
-    
+
     auto row_sum_output = torch::empty(
         {batch, heads, q_length, 1},
         input.options().dtype(torch::kInt32));
 
-    iwhisper::shift_exp_scalar(
-        input.data_ptr<int16_t>(),
-        row_max_plus1.data_ptr<int16_t>(),
-        mask_ptr,
-        output.data_ptr<uint8_t>(),
-        row_sum_output.data_ptr<int32_t>(),
-        batch,
-        heads,
-        q_length,
-        k_length,
-        frac_bits_item,
-        has_mask);
+    switch (backend)
+    {
+    case iwhisper::backend::ArmBackend::Scalar:
+        iwhisper::shift_exp_scalar(
+            input.data_ptr<int16_t>(),
+            row_max_plus1.data_ptr<int16_t>(),
+            mask_ptr,
+            output.data_ptr<uint8_t>(),
+            row_sum_output.data_ptr<int32_t>(),
+            batch,
+            heads,
+            q_length,
+            k_length,
+            frac_bits_item,
+            has_mask);
+        break;
+    case iwhisper::backend::ArmBackend::SIMD:
+        iwhisper::shift_exp_simd(
+            input.data_ptr<int16_t>(),
+            row_max_plus1.data_ptr<int16_t>(),
+            mask_ptr,
+            output.data_ptr<uint8_t>(),
+            row_sum_output.data_ptr<int32_t>(),
+            batch,
+            heads,
+            q_length,
+            k_length,
+            frac_bits_item,
+            has_mask);
+        break;
+    default:
+        TORCH_CHECK(
+            false,
+            "Unsupported backend");
+        break;
+    }
 
     return std::make_tuple(output, row_sum_output);
 }
 
+std::tuple<torch::Tensor, torch::Tensor>
+shift_exp_scalar_torch(
+    const torch::Tensor &input,
+    const torch::Tensor &row_max_plus1,
+    const std::optional<torch::Tensor> &mask,
+    const torch::Tensor &frac_bits)
+{
+    return shift_exp_torch_impl(
+        input,
+        row_max_plus1,
+        mask,
+        frac_bits,
+        iwhisper::backend::ArmBackend::Scalar);
+}
 
+std::tuple<torch::Tensor, torch::Tensor>
+shift_exp_simd_torch(
+    const torch::Tensor &input,
+    const torch::Tensor &row_max_plus1,
+    const std::optional<torch::Tensor> &mask,
+    const torch::Tensor &frac_bits)
+{
+    return shift_exp_torch_impl(
+        input,
+        row_max_plus1,
+        mask,
+        frac_bits,
+        iwhisper::backend::ArmBackend::SIMD);
+}
 
-
-
-torch::Tensor pv_scalar_torch(
+torch::Tensor pv_torch_impl(
     const torch::Tensor &p,
-    const torch::Tensor &v)
+    const torch::Tensor &v,
+    iwhisper::backend::ArmBackend backend)
 {
     // --------------------------------
     // CHECK: Input types / placement
@@ -368,29 +466,68 @@ torch::Tensor pv_scalar_torch(
             p.options().dtype(
                 torch::kInt32));
 
-    iwhisper::pv_scalar(
-        p.data_ptr<uint8_t>(),
-        v.data_ptr<int8_t>(),
-        output.data_ptr<int32_t>(),
-        B,
-        H,
-        Tq,
-        Tk,
-        D);
+    switch (backend)
+    {
+    case iwhisper::backend::ArmBackend::Scalar:
+        iwhisper::pv_scalar(
+            p.data_ptr<uint8_t>(),
+            v.data_ptr<int8_t>(),
+            output.data_ptr<int32_t>(),
+            B,
+            H,
+            Tq,
+            Tk,
+            D);
+        break;
+    case iwhisper::backend::ArmBackend::SIMD:
+        iwhisper::pv_simd(
+            p.data_ptr<uint8_t>(),
+            v.data_ptr<int8_t>(),
+            output.data_ptr<int32_t>(),
+            B,
+            H,
+            Tq,
+            Tk,
+            D);
+        break;
+    default:
+        TORCH_CHECK(
+            false,
+            "Unsupported backend");
+        break;
+    }
 
     return output;
 }
 
+torch::Tensor pv_scalar_torch(
+    const torch::Tensor &p,
+    const torch::Tensor &v)
+{
+    return pv_torch_impl(
+        p,
+        v,
+        iwhisper::backend::ArmBackend::Scalar);
+}
 
+torch::Tensor pv_simd_torch(
+    const torch::Tensor &p,
+    const torch::Tensor &v)
+{
+    return pv_torch_impl(
+        p,
+        v,
+        iwhisper::backend::ArmBackend::SIMD);
+}
 
-
-torch::Tensor pv_norm_requant_scalar_torch(
+torch::Tensor pv_norm_requant_torch_impl(
     const torch::Tensor &p,
     const torch::Tensor &v,
     const torch::Tensor &row_sum,
     const torch::Tensor &av_multiplier,
     const torch::Tensor &av_shift,
-    int64_t rsqrt_offset)
+    int64_t rsqrt_offset,
+    iwhisper::backend::ArmBackend backend)
 {
     // --------------------------------
     // CHECK: dtype / device / contiguity
@@ -431,13 +568,11 @@ torch::Tensor pv_norm_requant_scalar_torch(
         "row_sum must be [B,H,Tq,1]");
 
     TORCH_CHECK(
-        p.size(0) == v.size(0)
-        && p.size(0) == row_sum.size(0),
+        p.size(0) == v.size(0) && p.size(0) == row_sum.size(0),
         "batch mismatch");
 
     TORCH_CHECK(
-        p.size(1) == v.size(1)
-        && p.size(1) == row_sum.size(1),
+        p.size(1) == v.size(1) && p.size(1) == row_sum.size(1),
         "head count mismatch");
 
     TORCH_CHECK(
@@ -461,8 +596,7 @@ torch::Tensor pv_norm_requant_scalar_torch(
         "av_shift must be scalar");
 
     TORCH_CHECK(
-        rsqrt_offset >= 0
-        && rsqrt_offset <= 29,
+        rsqrt_offset >= 0 && rsqrt_offset <= 29,
         "rsqrt_offset must be in [0,29]");
 
     const int64_t B =
@@ -490,20 +624,82 @@ torch::Tensor pv_norm_requant_scalar_torch(
             p.options().dtype(
                 torch::kInt8));
 
-    iwhisper::pv_norm_requant_scalar(
-        p.data_ptr<uint8_t>(),
-        v.data_ptr<int8_t>(),
-        row_sum.data_ptr<int32_t>(),
-        av_multiplier.data_ptr<uint8_t>()[0],
-        av_shift.data_ptr<int8_t>()[0],
-        static_cast<uint32_t>(
-            rsqrt_offset),
-        output.data_ptr<int8_t>(),
-        B,
-        H,
-        Tq,
-        Tk,
-        D);
+    switch (backend)
+    {
+    case iwhisper::backend::ArmBackend::Scalar:
+        iwhisper::pv_norm_requant_scalar(
+            p.data_ptr<uint8_t>(),
+            v.data_ptr<int8_t>(),
+            row_sum.data_ptr<int32_t>(),
+            av_multiplier.data_ptr<uint8_t>()[0],
+            av_shift.data_ptr<int8_t>()[0],
+            static_cast<uint32_t>(
+                rsqrt_offset),
+            output.data_ptr<int8_t>(),
+            B,
+            H,
+            Tq,
+            Tk,
+            D);
+        break;
+    case iwhisper::backend::ArmBackend::SIMD:
+        iwhisper::pv_norm_requant_simd(
+            p.data_ptr<uint8_t>(),
+            v.data_ptr<int8_t>(),
+            row_sum.data_ptr<int32_t>(),
+            av_multiplier.data_ptr<uint8_t>()[0],
+            av_shift.data_ptr<int8_t>()[0],
+            static_cast<uint32_t>(
+                rsqrt_offset),
+            output.data_ptr<int8_t>(),
+            B,
+            H,
+            Tq,
+            Tk,
+            D);
+        break;
+    default:
+        TORCH_CHECK(
+            false,
+            "Unsupported backend");
+        break;
+    }
 
     return output;
+}
+
+torch::Tensor pv_norm_requant_scalar_torch(
+    const torch::Tensor &p,
+    const torch::Tensor &v,
+    const torch::Tensor &row_sum,
+    const torch::Tensor &av_multiplier,
+    const torch::Tensor &av_shift,
+    int64_t rsqrt_offset)
+{
+    return pv_norm_requant_torch_impl(
+        p,
+        v,
+        row_sum,
+        av_multiplier,
+        av_shift,
+        rsqrt_offset,
+        iwhisper::backend::ArmBackend::Scalar);
+}
+
+torch::Tensor pv_norm_requant_simd_torch(
+    const torch::Tensor &p,
+    const torch::Tensor &v,
+    const torch::Tensor &row_sum,
+    const torch::Tensor &av_multiplier,
+    const torch::Tensor &av_shift,
+    int64_t rsqrt_offset)
+{
+    return pv_norm_requant_torch_impl(
+        p,
+        v,
+        row_sum,
+        av_multiplier,
+        av_shift,
+        rsqrt_offset,
+        iwhisper::backend::ArmBackend::SIMD);
 }
