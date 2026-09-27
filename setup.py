@@ -40,6 +40,8 @@ sources = [
     str(CSRC / "conv1d" / "conv1d_torch.cpp"),
     str(CSRC / "conv1d" / "conv1d_scalar.cpp"),
     str(CSRC / "conv1d" / "conv1d_simd.cpp"),
+    str(CSRC / "add_requant15" / "add_requant15_torch.cpp"),
+    str(CSRC / "add_requant15" / "add_requant15_scalar.cpp"),
 ]
 
 include_dirs = []

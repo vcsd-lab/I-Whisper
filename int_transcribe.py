@@ -193,12 +193,20 @@ from i_whisper.modules.linear import set_linear8_backend, set_linear32_backend
 set_linear8_backend(model, backend="simd", logger=logger)  # set backend for Linear8 layers
 set_linear32_backend(model, backend="simd", logger=logger)  # set backend for Linear32 layers
 
-from i_whisper.model_int import set_residual_backend, set_layernorm_backend, set_gelu_backend, set_attention_backend, set_conv1d_backend
+from i_whisper.model_int import (
+    set_residual_backend,
+    set_layernorm_backend,
+    set_gelu_backend,
+    set_attention_backend,
+    set_conv1d_backend,
+    set_audio_encoder_backend,
+)
 set_residual_backend(model, backend="simd", logger=logger)  # set backend for ResidualAttention
 set_layernorm_backend(model, backend="simd", logger=logger)  # set backend for LayerNorm layers
 set_gelu_backend(model, backend="simd", logger=logger)  # set backend for GELU layers
 set_attention_backend(model, backend="simd", logger=logger)  # set backend for Attention layers
 set_conv1d_backend(model, backend="simd", logger=logger)  # set backend for Conv1d layers
+set_audio_encoder_backend(model, backend="scalar", logger=logger)  # set backend for Add+Requant15 layers
 
 
 if args.test:

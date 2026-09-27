@@ -1144,6 +1144,7 @@ class AudioEncoder_int(nn.Module):
         n_state: int,
         n_head: int,
         n_layer: int,
+        backend: str = "torch"
     ):
         '''inherit from nn.Module'''
         super().__init__()
@@ -1154,6 +1155,7 @@ class AudioEncoder_int(nn.Module):
         self.n_state = n_state
         self.n_head = n_head
         self.n_layer = n_layer
+        self.backend = backend
 
         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
         self.act_pe_bit = 8
@@ -1198,9 +1200,35 @@ class AudioEncoder_int(nn.Module):
        
         # x is already quantized in conv layers
         # add positional embedding ( offline quantized )
-        x = (x.int() + self.positional_embedding)
-        x = Rshift(x.mul(self.req_multiplier.int()), self.req_shiftmount)
-        x = x.clamp(min=-self.act_range, max=self.act_range).to(torch.int16)
+        if self.backend == "torch":
+            x = (x.int() + self.positional_embedding)
+            x = Rshift(x.mul(self.req_multiplier.int()), self.req_shiftmount)
+            x = x.clamp(min=-self.act_range, max=self.act_range).to(torch.int16)
+        elif self.backend == "scalar":
+            x = _C.add_requant15_scalar(
+                x.contiguous(),
+                self.positional_embedding.contiguous(),
+                self.req_multiplier,
+                self.req_shiftmount
+            )
+        elif self.backend == "simd":
+            x = _C.add_requant15_simd(
+                x.contiguous(),
+                self.positional_embedding.contiguous(),
+                self.req_multiplier,
+                self.req_shiftmount
+            )
+        elif self.backend == "check":
+            x_check = (x.int() + self.positional_embedding)
+            x_check = Rshift(x_check.mul(self.req_multiplier.int()), self.req_shiftmount)
+            x_check = x_check.clamp(min=-self.act_range, max=self.act_range).to(torch.int16)
+            x = _C.add_requant15_scalar(
+                x.contiguous(),
+                self.positional_embedding.contiguous(),
+                self.req_multiplier,
+                self.req_shiftmount
+            )
+            assert torch.equal(x, x_check), "Add/Requant mismatch between simd and torch!"
         
         '''Pass through Transformer Blocks'''
         for _ in range(self.n_layer):
@@ -1625,5 +1653,37 @@ def set_conv1d_backend(
                 layer.backend = backend
                 log(
                     f"Conv1d backend for {name} "
+                    f"set to {backend}."
+                )
+
+def set_audio_encoder_backend(
+    model,
+    backend,
+    logger=None,
+):
+    assert backend in [
+        "torch",
+        "scalar",
+        "simd",
+        "check",
+    ]
+
+    log = (
+        logger.debug
+        if logger is not None
+        else print
+    )
+
+    for name, layer in model.named_modules():
+        if isinstance(layer, AudioEncoder_int):
+            if layer.backend == backend:
+                log(
+                    f"AudioEncoder backend for {name} "
+                    f"is already set to {backend}."
+                )
+            else:
+                layer.backend = backend
+                log(
+                    f"AudioEncoder backend for {name} "
                     f"set to {backend}."
                 )

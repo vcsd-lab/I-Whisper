@@ -9,6 +9,7 @@
 #include "gelu/gelu_torch.h"
 #include "attention/attention_torch.h"
 #include "conv1d/conv1d_torch.h"
+#include "add_requant15/add_requant15_torch.h"
 #include "common/fixedpoint.h"
 #include "common/checktensor.h"
 
@@ -323,4 +324,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         pybind11::arg("stride"),
         pybind11::arg("padding"));
 
+    m.def(
+        "add_requant15_scalar",
+        &add_requant15_scalar_torch,
+        "I-Whisper INT8 add + requant-to-INT15 scalar kernel",
+        pybind11::arg("input"),
+        pybind11::arg("addend"),
+        pybind11::arg("multiplier"),
+        pybind11::arg("shift"));
 }
