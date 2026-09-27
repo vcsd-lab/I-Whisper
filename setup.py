@@ -42,6 +42,9 @@ sources = [
     str(CSRC / "conv1d" / "conv1d_simd.cpp"),
     str(CSRC / "add_requant15" / "add_requant15_torch.cpp"),
     str(CSRC / "add_requant15" / "add_requant15_scalar.cpp"),
+    str(CSRC / "add_requant15" / "add_requant15_simd.cpp"),
+    str(CSRC / "classifier" / "classifier_torch.cpp"),
+    str(CSRC / "classifier" / "classifier_scalar.cpp"),
 ]
 
 include_dirs = []

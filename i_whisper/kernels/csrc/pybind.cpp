@@ -10,6 +10,7 @@
 #include "attention/attention_torch.h"
 #include "conv1d/conv1d_torch.h"
 #include "add_requant15/add_requant15_torch.h"
+#include "classifier/classifier_torch.h"
 #include "common/fixedpoint.h"
 #include "common/checktensor.h"
 
@@ -330,6 +331,30 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         "I-Whisper INT8 add + requant-to-INT15 scalar kernel",
         pybind11::arg("input"),
         pybind11::arg("addend"),
+        pybind11::arg("multiplier"),
+        pybind11::arg("shift"));
+    m.def(
+        "add_requant15_simd",
+        &add_requant15_simd_torch,
+        "I-Whisper INT8 add + requant-to-INT15 SIMD kernel",
+        pybind11::arg("input"),
+        pybind11::arg("addend"),
+        pybind11::arg("multiplier"),
+        pybind11::arg("shift"));
+        
+    m.def(
+        "classifier_accum_scalar",
+        &classifier_accum_scalar_torch,
+        "I-Whisper terminal classifier raw scalar accumulation",
+        pybind11::arg("input"),
+        pybind11::arg("weight"));
+
+    m.def(
+        "classifier_scalar",
+        &classifier_scalar_torch,
+        "I-Whisper fused terminal classifier scalar kernel",
+        pybind11::arg("input"),
+        pybind11::arg("weight"),
         pybind11::arg("multiplier"),
         pybind11::arg("shift"));
 }

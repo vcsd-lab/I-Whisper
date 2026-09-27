@@ -1222,7 +1222,7 @@ class AudioEncoder_int(nn.Module):
             x_check = (x.int() + self.positional_embedding)
             x_check = Rshift(x_check.mul(self.req_multiplier.int()), self.req_shiftmount)
             x_check = x_check.clamp(min=-self.act_range, max=self.act_range).to(torch.int16)
-            x = _C.add_requant15_scalar(
+            x = _C.add_requant15_simd(
                 x.contiguous(),
                 self.positional_embedding.contiguous(),
                 self.req_multiplier,
@@ -1273,6 +1273,7 @@ class TextDecoder_int(nn.Module):
         n_state: int,
         n_head: int,
         n_layer: int,
+        backend: str = "torch"
     ):
         '''inherit from nn.Module'''
         super().__init__()
@@ -1283,6 +1284,7 @@ class TextDecoder_int(nn.Module):
         self.n_state = n_state
         self.n_head = n_head
         self.n_layer = n_layer
+        self.backend = backend
 
         '''Quantization Hyper-parameters (Bit-width of Parameters)'''
         self.dequant_need = True
@@ -1330,24 +1332,77 @@ class TextDecoder_int(nn.Module):
         offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
 
         '''Calculate token embeddings with/without quantization'''
-        x = ( self.token_embedding(x).to(torch.int32) + self.positional_embedding[offset : offset + x.shape[-1]].to(torch.int32) )
-        x = Rshift(x.mul(self.req_multiplier.int()), self.req_shiftmount)
-        x = x.clamp(min=-self.act_range, max=self.act_range).to(torch.int16)
+        if self.backend == "torch":
+            x = ( self.token_embedding(x).to(torch.int32) + self.positional_embedding[offset : offset + x.shape[-1]].to(torch.int32) )
+            x = Rshift(x.mul(self.req_multiplier.int()), self.req_shiftmount)
+            x = x.clamp(min=-self.act_range, max=self.act_range).to(torch.int16)
+        elif self.backend == "scalar":
+            x = _C.add_requant15_scalar(
+                self.token_embedding(x).contiguous(),
+                self.positional_embedding[offset : offset + x.shape[-1]].contiguous(),
+                self.req_multiplier.to(torch.uint16),
+                self.req_shiftmount
+            )
+        elif self.backend == "simd":
+            x = _C.add_requant15_simd(
+                self.token_embedding(x).contiguous(),
+                self.positional_embedding[offset : offset + x.shape[-1]].contiguous(),
+                self.req_multiplier.to(torch.uint16),
+                self.req_shiftmount
+            )
+        elif self.backend == "check":
+            x_check = ( self.token_embedding(x).to(torch.int32) + self.positional_embedding[offset : offset + x.shape[-1]].to(torch.int32) )
+            x_check = Rshift(x_check.mul(self.req_multiplier.int()), self.req_shiftmount)
+            x_check = x_check.clamp(min=-self.act_range, max=self.act_range).to(torch.int16)
+            x = _C.add_requant15_simd(
+                self.token_embedding(x).contiguous(),
+                self.positional_embedding[offset : offset + x.shape[-1]].contiguous(),
+                self.req_multiplier.to(torch.uint16),
+                self.req_shiftmount
+            )
+            assert torch.equal(x, x_check), "Add/Requant mismatch between simd and torch!"
 
         for _ in range(self.n_layer):
             x = self.blocks[_](x, xa, mask=self.mask, kv_cache=kv_cache)
 
         x = self.ln(x)[0]
 
-        # int8 matmul with token embedding weight
-        if torch.cuda.is_available(): # if GPU is available, use faster int8 GEMM
-            x = int8_linear_matmul(x, self.token_embedding.weight)
-        else:
-            x = torch.matmul(x.int(), self.token_embedding.weight.int().t())
-        # requant logits
-        x = (x.long().mul(self.clf_req_multiplier.long())>>32).int()
-        x = Rshift(x, self.clf_req_shiftmount)
-        x = x.clamp(min=-self.logit_range, max=self.logit_range).to(torch.int8)
+        if self.backend == "torch":
+            # int8 matmul with token embedding weight
+            if torch.cuda.is_available(): # if GPU is available, use faster int8 GEMM
+                x = int8_linear_matmul(x, self.token_embedding.weight)
+            else:
+                x = torch.matmul(x.int(), self.token_embedding.weight.int().t())
+            # requant logits
+            x = (x.long().mul(self.clf_req_multiplier.long())>>32).int()
+            x = Rshift(x, self.clf_req_shiftmount)
+            x = x.clamp(min=-self.logit_range, max=self.logit_range).to(torch.int8)
+        elif self.backend == "scalar":
+            x = _C.classifier_scalar(
+                x.contiguous(),
+                self.token_embedding.weight.contiguous(),
+                self.clf_req_multiplier,
+                self.clf_req_shiftmount
+            )
+        elif self.backend == "simd":
+            x = _C.classifier_simd(
+                x.contiguous(),
+                self.token_embedding.weight.contiguous(),
+                self.clf_req_multiplier,
+                self.clf_req_shiftmount
+            )
+        elif self.backend == "check":
+            x_check = int8_linear_matmul(x, self.token_embedding.weight)
+            x_check = (x_check.long().mul(self.clf_req_multiplier.long())>>32).int()
+            x_check = Rshift(x_check, self.clf_req_shiftmount)
+            x_check = x_check.clamp(min=-self.logit_range, max=self.logit_range).to(torch.int8)
+            x = _C.classifier_scalar(
+                x.contiguous(),
+                self.token_embedding.weight.contiguous(),
+                self.clf_req_multiplier,
+                self.clf_req_shiftmount
+            )
+            assert torch.equal(x, x_check), "Logits mismatch between simd and torch!"
         if self.dequant_need:
             x = x.float().div(self.act_logits_alpha)
         return x
@@ -1685,5 +1740,37 @@ def set_audio_encoder_backend(
                 layer.backend = backend
                 log(
                     f"AudioEncoder backend for {name} "
+                    f"set to {backend}."
+                )
+
+def set_text_decoder_backend(
+    model,
+    backend,
+    logger=None,
+):
+    assert backend in [
+        "torch",
+        "scalar",
+        "simd",
+        "check",
+    ]
+
+    log = (
+        logger.debug
+        if logger is not None
+        else print
+    )
+
+    for name, layer in model.named_modules():
+        if isinstance(layer, TextDecoder_int):
+            if layer.backend == backend:
+                log(
+                    f"TextDecoder backend for {name} "
+                    f"is already set to {backend}."
+                )
+            else:
+                layer.backend = backend
+                log(
+                    f"TextDecoder backend for {name} "
                     f"set to {backend}."
                 )
