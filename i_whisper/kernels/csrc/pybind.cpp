@@ -8,6 +8,7 @@
 #include "layernorm/layernorm_torch.h"
 #include "gelu/gelu_torch.h"
 #include "attention/attention_torch.h"
+#include "conv1d/conv1d_torch.h"
 #include "common/fixedpoint.h"
 #include "common/checktensor.h"
 
@@ -277,4 +278,49 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         pybind11::arg("av_multiplier"),
         pybind11::arg("av_shift"),
         pybind11::arg("rsqrt_offset"));
+
+    m.def(
+        "conv1d_accum_scalar",
+        &conv1d_accum_scalar_torch,
+        "I-Whisper raw INT8 Conv1d scalar accumulation",
+        pybind11::arg("input"),
+        pybind11::arg("weight"),
+        pybind11::arg("bias"),
+        pybind11::arg("stride"),
+        pybind11::arg("padding"));
+
+    m.def(
+        "conv1d_accum_simd",
+        &conv1d_accum_simd_torch,
+        "I-Whisper raw INT8 Conv1d SIMD accumulation",
+        pybind11::arg("input"),
+        pybind11::arg("weight"),
+        pybind11::arg("bias"),
+        pybind11::arg("stride"),
+        pybind11::arg("padding"));
+
+    m.def(
+        "conv1d_scalar",
+        &conv1d_scalar_torch,
+        "I-Whisper fused INT8 Conv1d scalar kernel",
+        pybind11::arg("input"),
+        pybind11::arg("weight"),
+        pybind11::arg("bias"),
+        pybind11::arg("multiplier"),
+        pybind11::arg("shift"),
+        pybind11::arg("stride"),
+        pybind11::arg("padding"));
+
+    m.def(
+        "conv1d_simd",
+        &conv1d_simd_torch,
+        "I-Whisper fused direct Conv1d SIMD kernel",
+        pybind11::arg("input"),
+        pybind11::arg("weight"),
+        pybind11::arg("bias"),
+        pybind11::arg("multiplier"),
+        pybind11::arg("shift"),
+        pybind11::arg("stride"),
+        pybind11::arg("padding"));
+
 }

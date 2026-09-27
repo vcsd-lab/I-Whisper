@@ -37,6 +37,9 @@ sources = [
     str(CSRC / "attention" / "attention_torch.cpp"),
     str(CSRC / "attention" / "attention_scalar.cpp"),
     str(CSRC / "attention" / "attention_simd.cpp"),
+    str(CSRC / "conv1d" / "conv1d_torch.cpp"),
+    str(CSRC / "conv1d" / "conv1d_scalar.cpp"),
+    str(CSRC / "conv1d" / "conv1d_simd.cpp"),
 ]
 
 include_dirs = []

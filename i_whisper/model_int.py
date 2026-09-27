@@ -547,7 +547,8 @@ class Conv1d_int(nn.Conv1d):
         padding: int = 0,
         dilation: int = 1,
         groups: int = 1,
-        bias: bool = True
+        bias: bool = True,
+        backend: str = "torch"
     ):
         '''inherit from nn.Conv1d'''
         super().__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias)
@@ -565,9 +566,51 @@ class Conv1d_int(nn.Conv1d):
             requires_grad=False)
         if self.bias is not None:
             self.bias = nn.Parameter(torch.ones((self.out_channels), dtype=torch.int32), requires_grad=False)
+        
+        self.backend = backend
 
-    
     def _conv_forward(
+        self, x: Tensor, weight: Tensor, bias: Optional[Tensor]
+    ) -> Tensor:
+        if self.backend == "torch":
+            out = self._forward_torch(x, weight, bias)
+        elif self.backend == "scalar":
+            out = _C.conv1d_scalar(
+                x.contiguous(),
+                weight.contiguous(),
+                bias.contiguous() if bias is not None else None,
+                self.req_multiplier,
+                self.req_shiftmount,
+                self.stride[0],
+                self.padding[0]
+            )
+        elif self.backend == "simd":
+            out = _C.conv1d_simd(
+                x.contiguous(),
+                weight.contiguous(),
+                bias.contiguous() if bias is not None else None,
+                self.req_multiplier,
+                self.req_shiftmount,
+                self.stride[0],
+                self.padding[0]
+            )
+        elif self.backend == "check":
+            out_ref = self._forward_torch(x, weight, bias)
+            out = _C.conv1d_simd(
+                x.contiguous(),
+                weight.contiguous(),
+                bias.contiguous() if bias is not None else None,
+                self.req_multiplier,
+                self.req_shiftmount,
+                self.stride[0],
+                self.padding[0]
+            )
+            assert torch.equal(out, out_ref), "Conv1d mismatch"
+        else:
+            raise NotImplementedError(f"Backend {self.backend} is not implemented.")
+        return out
+    
+    def _forward_torch(
         self, x: Tensor, weight: Tensor, bias: Optional[Tensor]
     ) -> Tensor:
         assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
@@ -1550,5 +1593,37 @@ def set_attention_backend(
                 layer.backend = backend
                 log(
                     f"MultiHeadAttention backend for {name} "
+                    f"set to {backend}."
+                )
+
+def set_conv1d_backend(
+    model,
+    backend,
+    logger=None,
+):
+    assert backend in [
+        "torch",
+        "scalar",
+        "simd",
+        "check",
+    ]
+
+    log = (
+        logger.debug
+        if logger is not None
+        else print
+    )
+
+    for name, layer in model.named_modules():
+        if isinstance(layer, Conv1d_int):
+            if layer.backend == backend:
+                log(
+                    f"Conv1d backend for {name} "
+                    f"is already set to {backend}."
+                )
+            else:
+                layer.backend = backend
+                log(
+                    f"Conv1d backend for {name} "
                     f"set to {backend}."
                 )
