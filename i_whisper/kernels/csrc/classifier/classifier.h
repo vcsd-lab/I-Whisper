@@ -21,6 +21,14 @@ void classifier_accum_scalar(
     int64_t K,
     int64_t N);
 
+void classifier_accum_simd(
+    const int8_t *input,
+    const int8_t *weight,
+    int32_t *output,
+    int64_t M,
+    int64_t K,
+    int64_t N);
+
 
 // Fused terminal classifier.
 //
@@ -32,6 +40,16 @@ void classifier_accum_scalar(
 //
 // multiplier and shift are per-layer scalars.
 void classifier_scalar(
+    const int8_t *input,
+    const int8_t *weight,
+    uint32_t multiplier,
+    int8_t shift,
+    int8_t *output,
+    int64_t M,
+    int64_t K,
+    int64_t N);
+
+void classifier_simd(
     const int8_t *input,
     const int8_t *weight,
     uint32_t multiplier,

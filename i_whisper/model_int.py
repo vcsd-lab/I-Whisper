@@ -1396,7 +1396,7 @@ class TextDecoder_int(nn.Module):
             x_check = (x_check.long().mul(self.clf_req_multiplier.long())>>32).int()
             x_check = Rshift(x_check, self.clf_req_shiftmount)
             x_check = x_check.clamp(min=-self.logit_range, max=self.logit_range).to(torch.int8)
-            x = _C.classifier_scalar(
+            x = _C.classifier_simd(
                 x.contiguous(),
                 self.token_embedding.weight.contiguous(),
                 self.clf_req_multiplier,

@@ -208,7 +208,7 @@ set_gelu_backend(model, backend="simd", logger=logger)  # set backend for GELU l
 set_attention_backend(model, backend="simd", logger=logger)  # set backend for Attention layers
 set_conv1d_backend(model, backend="simd", logger=logger)  # set backend for Conv1d layers
 set_audio_encoder_backend(model, backend="simd", logger=logger)  # set backend for Add+Requant15 layers
-set_text_decoder_backend(model, backend="scalar", logger=logger)  # set backend for TextDecoder layers
+set_text_decoder_backend(model, backend="simd", logger=logger)  # set backend for TextDecoder layers
 
 
 if args.test:

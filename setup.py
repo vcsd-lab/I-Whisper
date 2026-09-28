@@ -45,6 +45,7 @@ sources = [
     str(CSRC / "add_requant15" / "add_requant15_simd.cpp"),
     str(CSRC / "classifier" / "classifier_torch.cpp"),
     str(CSRC / "classifier" / "classifier_scalar.cpp"),
+    str(CSRC / "classifier" / "classifier_simd.cpp"),
 ]
 
 include_dirs = []

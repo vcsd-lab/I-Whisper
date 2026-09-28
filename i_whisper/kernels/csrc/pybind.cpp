@@ -348,11 +348,25 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         "I-Whisper terminal classifier raw scalar accumulation",
         pybind11::arg("input"),
         pybind11::arg("weight"));
+    m.def(
+        "classifier_accum_simd",
+        &classifier_accum_simd_torch,
+        "I-Whisper terminal classifier raw SIMD accumulation",
+        pybind11::arg("input"),
+        pybind11::arg("weight"));
 
     m.def(
         "classifier_scalar",
         &classifier_scalar_torch,
         "I-Whisper fused terminal classifier scalar kernel",
+        pybind11::arg("input"),
+        pybind11::arg("weight"),
+        pybind11::arg("multiplier"),
+        pybind11::arg("shift"));
+    m.def(
+        "classifier_simd",
+        &classifier_simd_torch,
+        "I-Whisper fused terminal classifier SIMD kernel",
         pybind11::arg("input"),
         pybind11::arg("weight"),
         pybind11::arg("multiplier"),
