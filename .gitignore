@@ -13,5 +13,8 @@ thumbs.db
 *.tgz
 EXELOG/
 test/
-LibriSpeech
+LibriSpeech*
 CKPT
+build
+
+*.so

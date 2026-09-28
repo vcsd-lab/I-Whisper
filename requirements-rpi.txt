@@ -1,0 +1,12 @@
+librosa
+more_itertools
+numpy
+regex
+scipy
+tiktoken
+tqdm
+bitsandbytes
+datasets==3.5.0
+termcolor
+memory_profiler
+jiwer

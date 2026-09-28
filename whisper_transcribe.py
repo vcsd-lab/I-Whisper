@@ -1,5 +1,5 @@
 import torch
-import whisper
+import i_whisper
 from datasets import load_dataset
 import numpy as np
 import os
@@ -149,11 +149,11 @@ logger.info(args.__str__())
 
 # GPU memory tracker
 if args.device == 'cuda' and torch.cuda.is_available():
-    gpu_tracker = whisper.MemTracker(detail=True, logging_fn=logger)
+    gpu_tracker = i_whisper.MemTracker(detail=True, logging_fn=logger)
 
 '''Load original Whisper model (base)'''
 if args.device == 'cuda' and torch.cuda.is_available():
-    model = whisper.load_model(args.model, device=args.device)
+    model = i_whisper.load_model(args.model, device=args.device)
     gpu_mem_log = gpu_tracker.track()
     for log_line in gpu_mem_log:
         logger.info(log_line)
@@ -161,15 +161,15 @@ else:
     profiler_stream = LoggerStream(logger, logging.INFO)
     @profile(stream=profiler_stream)
     def load():
-        return whisper.load_model(args.model, device=args.device)
+        return i_whisper.load_model(args.model, device=args.device)
     model = load()
 total_size = sum(p.numel() for p in model.state_dict().values())
 logger.info(f"Original Whisper {args.model} Loaded")
 logger.info(f"Param Num: {total_size}")
 # Decoding options
-options = whisper.DecodingOptions(fp16=False, language="en")
+options = i_whisper.DecodingOptions(fp16=False, language="en")
 
-PreProcessor = whisper.audio.PreProcessor(device="cpu")
+PreProcessor = i_whisper.audio.PreProcessor(device="cpu")
 PreProcessor.load_param()
 PreProcessor.lut_built = False # for original model, use true log
 
@@ -206,8 +206,8 @@ if args.test:
         audio = np.float32(audio)
 
         audio_lengths.append(audio.shape[0]/16000)
-        audio = torch.from_numpy(whisper.pad_or_trim(audio))  # INT16 range
-        mel = whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
+        audio = torch.from_numpy(i_whisper.pad_or_trim(audio))  # INT16 range
+        mel = i_whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
 
         # Reading Ground Truth
         GT_PATH = ds['train'][i]["audio"]["path"]
@@ -219,7 +219,7 @@ if args.test:
         GT_FILE.close()
 
         # quantized model transcription
-        result = whisper.decode(model, mel, options)
+        result = i_whisper.decode(model, mel, options)
         logger.info(f"transcribe result:    {result.text}")
         logger.info(f"ground truth(answer): {GT_READ}")
         # add result to TEXT list
@@ -233,7 +233,7 @@ else:
     logger.info(f"Total number of Whisper {args.model} parameters: {total_params}")
 
     '''Load Audio & PreProcessing'''
-    audio = whisper.load_audio("vcsdl_dataset/tt.mp3", raw=False)
+    audio = i_whisper.load_audio("vcsdl_dataset/tt.mp3", raw=False)
     logger.info(f"Original audio length: {audio.shape[0]/16000:.2f} seconds")
     audio_list = []
     while audio.shape[0] > 30*16000:
@@ -241,14 +241,14 @@ else:
         audio_list.append( audio[:30*16000] )
         audio = audio[30*16000:]
     # the last clip (less than 30 seconds)
-    audio = whisper.pad_or_trim(audio)
+    audio = i_whisper.pad_or_trim(audio)
     audio_list.append(audio)
     del audio
     logger.info(f"Original Audio is cut into {len(audio_list)} 30-second clips")
     t1 = time.time()
     for idx, audio in enumerate(audio_list):
-        mel = whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
-        result = whisper.decode(model, mel, options)
+        mel = i_whisper.log_mel_spectrogram(audio, n_mels=model.dims.n_mels).to(model.device)
+        result = i_whisper.decode(model, mel, options)
         logger.info(f"clip {idx:>2d}: {result.text}")
     t2 = time.time()
     logger.info(f"Total inference time for {len(audio_list)} clips: {t2-t1:.2f} seconds")

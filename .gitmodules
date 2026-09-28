@@ -1,3 +1,6 @@
 [submodule "librispeech_asr_dummy"]
 	path = librispeech_asr_dummy
 	url = https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy
+[submodule "i_whisper/kernels/csrc/simde"]
+	path = i_whisper/kernels/csrc/simde
+	url = https://github.com/simd-everywhere/simde.git
