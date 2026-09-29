@@ -1,12 +1,43 @@
-librosa
-more_itertools
-numpy
-regex
-scipy
-tiktoken
-tqdm
-bitsandbytes
+# I-Whisper RPi5 runtime + build/test dependencies
+# Recorded from the working iwhisper_venv on 2026-09-28.
+# Python: 3.13.5; baseline: 72b6c0f3d95a7783d430d5360e911bf9dce6369a
+# All pins below match the supplied pip freeze snapshot.
+# This curated list is NOT a full transitive dependency lock or a tested clean install.
+# Keep iwhisper-a0-environment.txt as the full environment snapshot.
+# Record the source/wheel for torch==2.14.0+cpu separately; do not assume
+# the configured package index can reproduce the installed CPU build.
+# I-Whisper itself is installed from the separately pinned local checkout,
+# not from the editable private-Git entry in the environment snapshot.
+
+# Runtime imports (including imports reached by model/package initialization)
+torch==2.14.0+cpu
+numpy==2.5.3
+bitsandbytes==0.50.2
+safetensors==0.8.0
+librosa==1.0.0
+matplotlib==3.11.2
+numba==0.67.0
+more-itertools==11.1.0
+regex==2026.9.10
+tiktoken==0.14.0
+tqdm==4.70.1
+
+# Retained explicit dependency from the existing requirements-rpi.txt
+scipy==1.18.1
+
+# int_transcribe.py / evaluation
 datasets==3.5.0
-termcolor
-memory_profiler
-jiwer
+jiwer==4.0.0
+termcolor==3.3.0
+memory-profiler==0.61.0
+
+# Extension build and kernel tests
+setuptools==84.0.0
+wheel==0.48.0
+ninja==1.13.2
+pytest==9.1.1
+
+# Non-Python prerequisites (record versions separately):
+# C++20-capable compiler, Python development headers, FFmpeg,
+# Git and the pinned SIMDe submodule for x86 correctness builds.
+# Triton/CUDA dependencies are not included in this RPi5 CPU profile.

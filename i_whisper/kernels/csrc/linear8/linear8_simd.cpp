@@ -2,6 +2,8 @@
 #include "../common/fixedpoint.h"
 #include "../common/simd.h"
 
+#include <ATen/Parallel.h>
+
 #include <cstdint>
 #include <algorithm>
 
@@ -215,57 +217,64 @@ namespace iwhisper
         bool has_bias,
         bool asymmetric)
     {
-        for (int64_t m = 0; m < M; ++m)
-        {
-            const int8_t *x_row =
-                x + m * K;
-
-            const int32_t x_sum =
-                asymmetric
-                    ? row_sum_simd(x_row, K)
-                    : 0;
-
-            for (int64_t n = 0; n < N; ++n)
+        at::parallel_for(
+            0,
+            M,
+            1,
+            [&](int64_t begin, int64_t end)
             {
-                const int8_t *w_row =
-                    weight + n * K;
-
-                int32_t acc =
-                    dot_product_simd(
-                        x_row,
-                        w_row,
-                        K);
-
-                if (has_bias)
+                for (int64_t m = begin; m < end; ++m)
                 {
-                    acc += bias[n];
+                    const int8_t *x_row =
+                        x + m * K;
+
+                    const int32_t x_sum =
+                        asymmetric
+                            ? row_sum_simd(x_row, K)
+                            : 0;
+
+                    for (int64_t n = 0; n < N; ++n)
+                    {
+                        const int8_t *w_row =
+                            weight + n * K;
+
+                        int32_t acc =
+                            dot_product_simd(
+                                x_row,
+                                w_row,
+                                K);
+
+                        if (has_bias)
+                        {
+                            acc += bias[n];
+                        }
+
+                        if (asymmetric)
+                        {
+                            acc -=
+                                x_sum *
+                                static_cast<int32_t>(
+                                    weight_zero[n]);
+                        }
+
+                        int32_t result =
+                            fixedpoint::requant(
+                                acc,
+                                multiplier[n],
+                                static_cast<uint32_t>(
+                                    shift[n]));
+
+                        result =
+                            std::clamp(
+                                result,
+                                int32_t{-127},
+                                int32_t{127});
+
+                        output[m * N + n] =
+                            static_cast<int8_t>(result);
+                    }
                 }
-
-                if (asymmetric)
-                {
-                    acc -=
-                        x_sum *
-                        static_cast<int32_t>(
-                            weight_zero[n]);
-                }
-
-                int32_t result =
-                    fixedpoint::requant(
-                        acc,
-                        multiplier[n],
-                        static_cast<uint32_t>(
-                            shift[n]));
-
-                result =
-                    std::clamp(
-                        result,
-                        int32_t{-127},
-                        int32_t{127});
-
-                output[m * N + n] =
-                    static_cast<int8_t>(result);
-            }
-        }
+            });
     }
 
     void linear8_accum_simd(
