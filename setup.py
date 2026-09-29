@@ -50,6 +50,7 @@ sources = [
 
 include_dirs = []
 define_macros = []
+link_args = []
 
 
 build_type = os.environ.get(
@@ -102,6 +103,8 @@ if machine in ("aarch64", "arm64"):
     define_macros.append(
         ("IWHISPER_HAS_NEON", "1")
     )
+    compile_args.append("-fopenmp")
+    link_args.append("-fopenmp")
 
     features = get_cpu_features()
     has_dotprod = "asimddp" in features
@@ -185,6 +188,8 @@ setup(
             define_macros=define_macros,
 
             extra_compile_args=compile_args,
+
+            extra_link_args=link_args
         ),
     ],
 

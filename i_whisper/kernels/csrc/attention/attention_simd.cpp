@@ -3,6 +3,8 @@
 #include "../common/fixedpoint.h"
 #include "../layernorm/layernorm.h"
 
+#include <ATen/Parallel.h>
+
 #include <cstdint>
 #include <algorithm>
 #include <stdexcept>
@@ -695,35 +697,53 @@ namespace iwhisper
                 ? static_cast<uint32_t>(shift)
                 : uint32_t{0};
 
-        for (int64_t b = 0;
-             b < batch;
-             ++b)
-        {
-            for (int64_t h = 0;
-                 h < heads;
-                 ++h)
+        const int64_t work_items =
+            batch * heads * q_length;
+
+        at::parallel_for(
+            0,
+            work_items,
+            1,
+            [&](int64_t begin, int64_t end)
             {
-                const int64_t q_head_base =
-                    (b * heads + h) * q_length * head_dim;
-
-                const int64_t k_head_base =
-                    (b * heads + h) * k_length * head_dim;
-
-                const int64_t qk_head_base =
-                    (b * heads + h) * q_length * k_length;
-
-                const int64_t max_head_base =
-                    (b * heads + h) * q_length;
-
-                for (int64_t qi = 0;
-                     qi < q_length;
-                     ++qi)
+                for (int64_t row = begin; row < end; ++row)
                 {
+                    const int64_t qi =
+                        row % q_length;
+
+                    const int64_t bh =
+                        row / q_length;
+
+                    const int64_t h =
+                        bh % heads;
+
+                    const int64_t b =
+                        bh / heads;
+
+                    const int64_t q_head_base =
+                        (b * heads + h) *
+                        q_length *
+                        head_dim;
+
+                    const int64_t k_head_base =
+                        (b * heads + h) *
+                        k_length *
+                        head_dim;
+
+                    const int64_t qk_head_base =
+                        (b * heads + h) *
+                        q_length *
+                        k_length;
+
                     const int8_t *q_ptr =
-                        q + q_head_base + qi * head_dim;
+                        q +
+                        q_head_base +
+                        qi * head_dim;
 
                     int16_t *qk_ptr =
-                        qk_output + qk_head_base + qi * k_length;
+                        qk_output +
+                        qk_head_base +
+                        qi * k_length;
 
                     int16_t row_max =
                         kInt16Min;
@@ -733,7 +753,8 @@ namespace iwhisper
                          ++ki)
                     {
                         const bool masked =
-                            has_mask && mask[qi * k_length + ki];
+                            has_mask &&
+                            mask[qi * k_length + ki];
 
                         if (masked)
                         {
@@ -743,7 +764,9 @@ namespace iwhisper
                         }
 
                         const int8_t *k_ptr =
-                            k + k_head_base + ki * head_dim;
+                            k +
+                            k_head_base +
+                            ki * head_dim;
 
                         const int32_t acc =
                             dot_s8_neon(
@@ -775,13 +798,12 @@ namespace iwhisper
                         }
                     }
 
-                    row_max_output[max_head_base + qi] =
+                    row_max_output[row] =
                         wrap_add_s16(
                             row_max,
                             int16_t{1});
                 }
-            }
-        }
+            });
     }
 
     void shift_exp_simd(
