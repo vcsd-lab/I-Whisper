@@ -1151,35 +1151,51 @@ namespace iwhisper
                     0,
                     32));
 
-        for (int64_t b = 0;
-             b < batch;
-             ++b)
+        const int64_t work_items =
+            batch * heads * q_length;
+
+        // Validate before entering the OpenMP parallel region.
+        for (int64_t row = 0;
+             row < work_items;
+             ++row)
         {
-            for (int64_t h = 0;
-                 h < heads;
-                 ++h)
+            if (row_sum[row] < 0)
             {
-                const int64_t p_head_base =
-                    (b * heads + h) * q_length * k_length;
+                throw std::invalid_argument(
+                    "row_sum must be non-negative");
+            }
+        }
 
-                const int64_t v_head_base =
-                    (b * heads + h) * head_dim * k_length;
-
-                const int64_t sum_head_base =
-                    (b * heads + h) * q_length;
-
-                for (int64_t qi = 0;
-                     qi < q_length;
-                     ++qi)
+        at::parallel_for(
+            0,
+            work_items,
+            1,
+            [&](int64_t begin, int64_t end)
+            {
+                for (int64_t row = begin;
+                     row < end;
+                     ++row)
                 {
-                    const int32_t sum =
-                        row_sum[sum_head_base + qi];
+                    const int64_t qi =
+                        row % q_length;
 
-                    if (sum < 0)
-                    {
-                        throw std::invalid_argument(
-                            "row_sum must be non-negative");
-                    }
+                    const int64_t bh =
+                        row / q_length;
+
+                    const int64_t h =
+                        bh % heads;
+
+                    const int64_t b =
+                        bh / heads;
+
+                    const int64_t p_head_base =
+                        bh * q_length * k_length;
+
+                    const int64_t v_head_base =
+                        bh * head_dim * k_length;
+
+                    const int32_t sum =
+                        row_sum[row];
 
                     int32_t inv = 0;
 
@@ -1190,10 +1206,15 @@ namespace iwhisper
                         rsqrt_offset);
 
                     const uint8_t *p_row =
-                        p + p_head_base + qi * k_length;
+                        p +
+                        p_head_base +
+                        qi * k_length;
 
                     int8_t *out_row =
-                        output + (b * q_length + qi) * (heads * head_dim) + h * head_dim;
+                        output +
+                        (b * q_length + qi) *
+                            (heads * head_dim) +
+                        h * head_dim;
 
                     int64_t d = 0;
 
@@ -1202,13 +1223,24 @@ namespace iwhisper
                          d += 4)
                     {
                         const int8_t *v0 =
-                            v + v_head_base + (d + 0) * k_length;
+                            v +
+                            v_head_base +
+                            (d + 0) * k_length;
+
                         const int8_t *v1 =
-                            v + v_head_base + (d + 1) * k_length;
+                            v +
+                            v_head_base +
+                            (d + 1) * k_length;
+
                         const int8_t *v2 =
-                            v + v_head_base + (d + 2) * k_length;
+                            v +
+                            v_head_base +
+                            (d + 2) * k_length;
+
                         const int8_t *v3 =
-                            v + v_head_base + (d + 3) * k_length;
+                            v +
+                            v_head_base +
+                            (d + 3) * k_length;
 
                         alignas(16) int32_t dots[4];
 
@@ -1225,8 +1257,7 @@ namespace iwhisper
                             dots[3]);
 
                         int32x4_t values =
-                            vld1q_s32(
-                                dots);
+                            vld1q_s32(dots);
 
                         values =
                             postprocess_pv_s32x4(
@@ -1236,22 +1267,24 @@ namespace iwhisper
                                 av_multiplier,
                                 requant_shift);
 
-                        // Values are already clamped to INT8 range.
                         out_row[d + 0] =
                             static_cast<int8_t>(
                                 vgetq_lane_s32(
                                     values,
                                     0));
+
                         out_row[d + 1] =
                             static_cast<int8_t>(
                                 vgetq_lane_s32(
                                     values,
                                     1));
+
                         out_row[d + 2] =
                             static_cast<int8_t>(
                                 vgetq_lane_s32(
                                     values,
                                     2));
+
                         out_row[d + 3] =
                             static_cast<int8_t>(
                                 vgetq_lane_s32(
@@ -1259,14 +1292,14 @@ namespace iwhisper
                                     3));
                     }
 
-                    // D tail.  Production Whisper D=64, so this path
-                    // normally does not execute.
                     for (;
                          d < head_dim;
                          ++d)
                     {
                         const int8_t *v_row =
-                            v + v_head_base + d * k_length;
+                            v +
+                            v_head_base +
+                            d * k_length;
 
                         int32_t value =
                             dot_u8_s8_tail_scalar(
@@ -1312,8 +1345,6 @@ namespace iwhisper
                                 value);
                     }
                 }
-            }
-        }
+            });
     }
-
 } // namespace iwhisper
