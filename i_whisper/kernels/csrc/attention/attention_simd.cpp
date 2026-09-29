@@ -82,6 +82,94 @@ namespace iwhisper
             return sum;
         }
 
+#ifdef IWHISPER_USE_DOTPROD
+
+        static inline void dot_s8_2x4_dotprod(
+            const int8_t *q0,
+            const int8_t *q1,
+            const int8_t *k0,
+            const int8_t *k1,
+            const int8_t *k2,
+            const int8_t *k3,
+            int64_t length,
+            int32_t out0[4],
+            int32_t out1[4])
+        {
+            int64_t d = 0;
+
+            int32x4_t acc00 = vdupq_n_s32(0);
+            int32x4_t acc01 = vdupq_n_s32(0);
+            int32x4_t acc02 = vdupq_n_s32(0);
+            int32x4_t acc03 = vdupq_n_s32(0);
+
+            int32x4_t acc10 = vdupq_n_s32(0);
+            int32x4_t acc11 = vdupq_n_s32(0);
+            int32x4_t acc12 = vdupq_n_s32(0);
+            int32x4_t acc13 = vdupq_n_s32(0);
+
+            for (; d + 16 <= length; d += 16)
+            {
+                const int8x16_t vq0 =
+                    vld1q_s8(q0 + d);
+
+                const int8x16_t vq1 =
+                    vld1q_s8(q1 + d);
+
+                const int8x16_t vk0 =
+                    vld1q_s8(k0 + d);
+
+                const int8x16_t vk1 =
+                    vld1q_s8(k1 + d);
+
+                const int8x16_t vk2 =
+                    vld1q_s8(k2 + d);
+
+                const int8x16_t vk3 =
+                    vld1q_s8(k3 + d);
+
+                acc00 = vdotq_s32(acc00, vq0, vk0);
+                acc01 = vdotq_s32(acc01, vq0, vk1);
+                acc02 = vdotq_s32(acc02, vq0, vk2);
+                acc03 = vdotq_s32(acc03, vq0, vk3);
+
+                acc10 = vdotq_s32(acc10, vq1, vk0);
+                acc11 = vdotq_s32(acc11, vq1, vk1);
+                acc12 = vdotq_s32(acc12, vq1, vk2);
+                acc13 = vdotq_s32(acc13, vq1, vk3);
+            }
+
+            out0[0] = vaddvq_s32(acc00);
+            out0[1] = vaddvq_s32(acc01);
+            out0[2] = vaddvq_s32(acc02);
+            out0[3] = vaddvq_s32(acc03);
+
+            out1[0] = vaddvq_s32(acc10);
+            out1[1] = vaddvq_s32(acc11);
+            out1[2] = vaddvq_s32(acc12);
+            out1[3] = vaddvq_s32(acc13);
+
+            for (; d < length; ++d)
+            {
+                const int32_t qv0 =
+                    static_cast<int32_t>(q0[d]);
+
+                const int32_t qv1 =
+                    static_cast<int32_t>(q1[d]);
+
+                out0[0] += qv0 * static_cast<int32_t>(k0[d]);
+                out0[1] += qv0 * static_cast<int32_t>(k1[d]);
+                out0[2] += qv0 * static_cast<int32_t>(k2[d]);
+                out0[3] += qv0 * static_cast<int32_t>(k3[d]);
+
+                out1[0] += qv1 * static_cast<int32_t>(k0[d]);
+                out1[1] += qv1 * static_cast<int32_t>(k1[d]);
+                out1[2] += qv1 * static_cast<int32_t>(k2[d]);
+                out1[3] += qv1 * static_cast<int32_t>(k3[d]);
+            }
+        }
+
+#endif
+
         static inline int16_t s16_from_bits(
             uint16_t bits)
         {
@@ -699,6 +787,196 @@ namespace iwhisper
 
         const int64_t work_items =
             batch * heads * q_length;
+
+#ifdef IWHISPER_USE_DOTPROD
+
+        if (!has_mask &&
+            q_length >= 2 &&
+            k_length >= 4 &&
+            (q_length % 2) == 0 &&
+            (k_length % 4) == 0)
+        {
+            const int64_t q_tiles =
+                q_length / 2;
+
+            const int64_t tiled_work_items =
+                batch * heads * q_tiles;
+
+            at::parallel_for(
+                0,
+                tiled_work_items,
+                1,
+                [&](int64_t begin, int64_t end)
+                {
+                    for (int64_t tile = begin;
+                         tile < end;
+                         ++tile)
+                    {
+                        const int64_t qt =
+                            tile % q_tiles;
+
+                        const int64_t bh =
+                            tile / q_tiles;
+
+                        const int64_t h =
+                            bh % heads;
+
+                        const int64_t b =
+                            bh / heads;
+
+                        const int64_t qi =
+                            qt * 2;
+
+                        const int64_t q_head_base =
+                            (b * heads + h) *
+                            q_length *
+                            head_dim;
+
+                        const int64_t k_head_base =
+                            (b * heads + h) *
+                            k_length *
+                            head_dim;
+
+                        const int64_t qk_head_base =
+                            (b * heads + h) *
+                            q_length *
+                            k_length;
+
+                        const int8_t *q0 =
+                            q +
+                            q_head_base +
+                            (qi + 0) * head_dim;
+
+                        const int8_t *q1 =
+                            q +
+                            q_head_base +
+                            (qi + 1) * head_dim;
+
+                        int16_t *out0 =
+                            qk_output +
+                            qk_head_base +
+                            (qi + 0) * k_length;
+
+                        int16_t *out1 =
+                            qk_output +
+                            qk_head_base +
+                            (qi + 1) * k_length;
+
+                        int16_t row_max0 =
+                            kInt16Min;
+
+                        int16_t row_max1 =
+                            kInt16Min;
+
+                        for (int64_t ki = 0;
+                             ki < k_length;
+                             ki += 4)
+                        {
+                            const int8_t *k0 =
+                                k +
+                                k_head_base +
+                                (ki + 0) * head_dim;
+
+                            const int8_t *k1 =
+                                k +
+                                k_head_base +
+                                (ki + 1) * head_dim;
+
+                            const int8_t *k2 =
+                                k +
+                                k_head_base +
+                                (ki + 2) * head_dim;
+
+                            const int8_t *k3 =
+                                k +
+                                k_head_base +
+                                (ki + 3) * head_dim;
+
+                            int32_t acc0[4];
+                            int32_t acc1[4];
+
+                            dot_s8_2x4_dotprod(
+                                q0,
+                                q1,
+                                k0,
+                                k1,
+                                k2,
+                                k3,
+                                head_dim,
+                                acc0,
+                                acc1);
+
+                            for (int64_t j = 0;
+                                 j < 4;
+                                 ++j)
+                            {
+                                const int32_t scaled0 =
+                                    wrap_mul_s32_u8(
+                                        acc0[j],
+                                        multiplier);
+
+                                const int32_t scaled1 =
+                                    wrap_mul_s32_u8(
+                                        acc1[j],
+                                        multiplier);
+
+                                const int32_t requantized0 =
+                                    iwhisper::fixedpoint::rounding_rshift(
+                                        scaled0,
+                                        requant_shift);
+
+                                const int32_t requantized1 =
+                                    iwhisper::fixedpoint::rounding_rshift(
+                                        scaled1,
+                                        requant_shift);
+
+                                const int16_t qk0 =
+                                    clamp_s16(
+                                        requantized0);
+
+                                const int16_t qk1 =
+                                    clamp_s16(
+                                        requantized1);
+
+                                out0[ki + j] =
+                                    qk0;
+
+                                out1[ki + j] =
+                                    qk1;
+
+                                if (qk0 > row_max0)
+                                {
+                                    row_max0 = qk0;
+                                }
+
+                                if (qk1 > row_max1)
+                                {
+                                    row_max1 = qk1;
+                                }
+                            }
+                        }
+
+                        const int64_t row0 =
+                            (b * heads + h) *
+                                q_length +
+                            qi;
+
+                        row_max_output[row0] =
+                            wrap_add_s16(
+                                row_max0,
+                                int16_t{1});
+
+                        row_max_output[row0 + 1] =
+                            wrap_add_s16(
+                                row_max1,
+                                int16_t{1});
+                    }
+                });
+
+            return;
+        }
+
+#endif
 
         at::parallel_for(
             0,
