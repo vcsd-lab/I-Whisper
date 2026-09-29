@@ -1,6 +1,3 @@
-import os
-import time
-import atexit
 import base64
 import gzip
 import platform
@@ -63,110 +60,6 @@ class ModelDimensions:
     n_text_head: int   # base: 8, tiny: 6
     n_text_layer: int  # base: 6, tiny: 4
 
-
-_CONTIG_PROFILE = os.environ.get(
-    "IWHISPER_PROFILE_CONTIG", "0"
-) == "1"
-
-_CONTIG_STATS = {}
-
-
-def _profile_contiguous(x, name, kind):
-    if not _CONTIG_PROFILE:
-        return x.contiguous()
-
-    key = (kind, name)
-
-    if key not in _CONTIG_STATS:
-        _CONTIG_STATS[key] = {
-            "calls": 0,
-            "copies": 0,
-            "bytes": 0,
-            "time_ns": 0,
-            "copy_time_ns": 0,
-            "noop_time_ns": 0,
-            "min_numel": None,
-            "max_numel": 0,
-        }
-
-    s = _CONTIG_STATS[key]
-
-    input_ptr = x.data_ptr()
-    numel = x.numel()
-
-    t0 = time.perf_counter_ns()
-    y = x.contiguous()
-    dt = time.perf_counter_ns() - t0
-
-    copied = y.data_ptr() != input_ptr
-
-    s["calls"] += 1
-    s["time_ns"] += dt
-
-    if s["min_numel"] is None:
-        s["min_numel"] = numel
-    else:
-        s["min_numel"] = min(
-            s["min_numel"], numel
-        )
-
-    s["max_numel"] = max(
-        s["max_numel"], numel
-    )
-
-    if copied:
-        s["copies"] += 1
-        s["bytes"] += (
-            numel * x.element_size()
-        )
-        s["copy_time_ns"] += dt
-    else:
-        s["noop_time_ns"] += dt
-
-    return y
-
-
-def _print_contiguous_profile():
-    if not _CONTIG_PROFILE:
-        return
-
-    print("\n========== CONTIGUOUS PROFILE ==========")
-
-    rows = sorted(
-        _CONTIG_STATS.items(),
-        key=lambda item: item[1]["time_ns"],
-        reverse=True,
-    )
-
-    print(
-        f"{'kind':16s} "
-        f"{'tensor':12s} "
-        f"{'calls':>7s} "
-        f"{'copies':>7s} "
-        f"{'MiB copied':>12s} "
-        f"{'total ms':>10s} "
-        f"{'copy ms':>10s} "
-        f"{'min elems':>12s} "
-        f"{'max elems':>12s}"
-    )
-
-    for (kind, name), s in rows:
-        print(
-            f"{kind:16s} "
-            f"{name:12s} "
-            f"{s['calls']:7d} "
-            f"{s['copies']:7d} "
-            f"{s['bytes'] / (1024**2):12.2f} "
-            f"{s['time_ns'] / 1e6:10.3f} "
-            f"{s['copy_time_ns'] / 1e6:10.3f} "
-            f"{s['min_numel']:12d} "
-            f"{s['max_numel']:12d}"
-        )
-
-    print("========================================")
-
-
-atexit.register(_print_contiguous_profile)
 
 
 
@@ -880,12 +773,6 @@ class MultiHeadAttention_int(nn.Module):
         is_cross_attention: bool = False,
     ):
         """Prepare attention mask if provided"""
-        if mask is not None:
-            contig_kind = "decoder_self"
-        elif q.shape[-2] == k.shape[-2]:
-            contig_kind = "encoder_self"
-        else:
-            contig_kind = "decoder_cross"
         attn_mask = None
 
         if mask is not None:
@@ -896,16 +783,10 @@ class MultiHeadAttention_int(nn.Module):
 
             assert q_offset >= 0
 
-            attn_mask_view = mask[
+            attn_mask = mask[
                 q_offset : q_offset + q_len,
                 :k_len
-            ]
-
-            attn_mask = _profile_contiguous(
-                attn_mask_view,
-                "mask",
-                contig_kind,
-            )
+            ].contiguous()
 
             assert attn_mask.shape == (q_len, k_len)
             
@@ -972,16 +853,8 @@ class MultiHeadAttention_int(nn.Module):
                     -1
                 ).permute(0, 2, 1, 3)
 
-                # k_contig = k.contiguous()
+                k_contig = k.contiguous()
                 
-                
-
-                k_contig = _profile_contiguous(
-                    k,
-                    "k",
-                    contig_kind,
-                )
-
                 if (
                     is_cross_attention
                     and kv_cache is not None
@@ -989,11 +862,7 @@ class MultiHeadAttention_int(nn.Module):
                     kv_cache[packed_k_key] = k_contig
 
 
-            q_contig = _profile_contiguous(
-                q,
-                "q",
-                contig_kind,
-            )
+            q_contig = q.contiguous()
 
             qk, qk_row_max = _C.qk_requant_rowmax_simd(
                 q_contig,
@@ -1129,23 +998,9 @@ class MultiHeadAttention_int(nn.Module):
                 self.rsqrt_offset,
             )
         elif self.backend == "simd":
-            qk_exp_contig = _profile_contiguous(
-                qk_exp,
-                "qk_exp",
-                contig_kind,
-            )
-
-            v_contig = _profile_contiguous(
-                v,
-                "v",
-                contig_kind,
-            )
-
-            qk_exp_sum_contig = _profile_contiguous(
-                qk_exp_sum,
-                "qk_exp_sum",
-                contig_kind,
-            )
+            qk_exp_contig = qk_exp.contiguous()
+            v_contig = v.contiguous()
+            qk_exp_sum_contig = qk_exp_sum.contiguous()
 
             out = _C.pv_norm_requant_simd(
                 qk_exp_contig,
