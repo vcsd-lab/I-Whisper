@@ -1,3 +1,6 @@
+import os
+import time
+import atexit
 import base64
 import gzip
 import platform
@@ -61,17 +64,111 @@ class ModelDimensions:
     n_text_layer: int  # base: 6, tiny: 4
 
 
-def Rshift_legacy(x, N):
-    if x.dtype is torch.int32:
-        ROUNDING_BIAS = (
-            1 << (N - 1).to(torch.int32).clamp(0, 32)
-        ) - torch.signbit(x).to(torch.int32)
+_CONTIG_PROFILE = os.environ.get(
+    "IWHISPER_PROFILE_CONTIG", "0"
+) == "1"
 
-        return (
-            x + ROUNDING_BIAS
-        ) >> N.to(torch.int32).clamp(0, 32)
+_CONTIG_STATS = {}
 
-    raise NotImplementedError
+
+def _profile_contiguous(x, name, kind):
+    if not _CONTIG_PROFILE:
+        return x.contiguous()
+
+    key = (kind, name)
+
+    if key not in _CONTIG_STATS:
+        _CONTIG_STATS[key] = {
+            "calls": 0,
+            "copies": 0,
+            "bytes": 0,
+            "time_ns": 0,
+            "copy_time_ns": 0,
+            "noop_time_ns": 0,
+            "min_numel": None,
+            "max_numel": 0,
+        }
+
+    s = _CONTIG_STATS[key]
+
+    input_ptr = x.data_ptr()
+    numel = x.numel()
+
+    t0 = time.perf_counter_ns()
+    y = x.contiguous()
+    dt = time.perf_counter_ns() - t0
+
+    copied = y.data_ptr() != input_ptr
+
+    s["calls"] += 1
+    s["time_ns"] += dt
+
+    if s["min_numel"] is None:
+        s["min_numel"] = numel
+    else:
+        s["min_numel"] = min(
+            s["min_numel"], numel
+        )
+
+    s["max_numel"] = max(
+        s["max_numel"], numel
+    )
+
+    if copied:
+        s["copies"] += 1
+        s["bytes"] += (
+            numel * x.element_size()
+        )
+        s["copy_time_ns"] += dt
+    else:
+        s["noop_time_ns"] += dt
+
+    return y
+
+
+def _print_contiguous_profile():
+    if not _CONTIG_PROFILE:
+        return
+
+    print("\n========== CONTIGUOUS PROFILE ==========")
+
+    rows = sorted(
+        _CONTIG_STATS.items(),
+        key=lambda item: item[1]["time_ns"],
+        reverse=True,
+    )
+
+    print(
+        f"{'kind':16s} "
+        f"{'tensor':12s} "
+        f"{'calls':>7s} "
+        f"{'copies':>7s} "
+        f"{'MiB copied':>12s} "
+        f"{'total ms':>10s} "
+        f"{'copy ms':>10s} "
+        f"{'min elems':>12s} "
+        f"{'max elems':>12s}"
+    )
+
+    for (kind, name), s in rows:
+        print(
+            f"{kind:16s} "
+            f"{name:12s} "
+            f"{s['calls']:7d} "
+            f"{s['copies']:7d} "
+            f"{s['bytes'] / (1024**2):12.2f} "
+            f"{s['time_ns'] / 1e6:10.3f} "
+            f"{s['copy_time_ns'] / 1e6:10.3f} "
+            f"{s['min_numel']:12d} "
+            f"{s['max_numel']:12d}"
+        )
+
+    print("========================================")
+
+
+atexit.register(_print_contiguous_profile)
+
+
 
 class GELU_int(nn.Module):
     def __init__(
@@ -731,7 +828,14 @@ class MultiHeadAttention_int(nn.Module):
             k = kv_cache[self.key]
             v = kv_cache[self.value]
 
-        wv = self.qkv_attention(q, k, v, mask)
+        wv = self.qkv_attention(
+            q,
+            k,
+            v,
+            mask,
+            kv_cache=kv_cache,
+            is_cross_attention=(xa is not None),
+        )
         return self.out(wv)
 
 
@@ -767,9 +871,21 @@ class MultiHeadAttention_int(nn.Module):
 
     
     def qkv_attention(
-        self, q: Tensor, k: Tensor, v: Tensor, mask: Optional[Tensor] = None
+        self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        mask: Optional[Tensor] = None,
+        kv_cache: Optional[dict] = None,
+        is_cross_attention: bool = False,
     ):
         """Prepare attention mask if provided"""
+        if mask is not None:
+            contig_kind = "decoder_self"
+        elif q.shape[-2] == k.shape[-2]:
+            contig_kind = "encoder_self"
+        else:
+            contig_kind = "decoder_cross"
         attn_mask = None
 
         if mask is not None:
@@ -780,10 +896,16 @@ class MultiHeadAttention_int(nn.Module):
 
             assert q_offset >= 0
 
-            attn_mask = mask[
+            attn_mask_view = mask[
                 q_offset : q_offset + q_len,
                 :k_len
-            ].contiguous()
+            ]
+
+            attn_mask = _profile_contiguous(
+                attn_mask_view,
+                "mask",
+                contig_kind,
+            )
 
             assert attn_mask.shape == (q_len, k_len)
             
@@ -828,15 +950,59 @@ class MultiHeadAttention_int(nn.Module):
             )
         
         elif self.backend == "simd":
-            q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
-            k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
+            q = q.view(
+                *q.shape[:2], self.n_head, -1
+            ).permute(0, 2, 1, 3)
+
+            packed_k_key = (
+                self.key,
+                "iwhisper_cross_k_packed",
+            )
+
+            if (
+                is_cross_attention
+                and kv_cache is not None
+                and packed_k_key in kv_cache
+            ):
+                k_contig = kv_cache[packed_k_key]
+            else:
+                k = k.view(
+                    *k.shape[:2],
+                    self.n_head,
+                    -1
+                ).permute(0, 2, 1, 3)
+
+                # k_contig = k.contiguous()
+                
+                
+
+                k_contig = _profile_contiguous(
+                    k,
+                    "k",
+                    contig_kind,
+                )
+
+                if (
+                    is_cross_attention
+                    and kv_cache is not None
+                ):
+                    kv_cache[packed_k_key] = k_contig
+
+
+            q_contig = _profile_contiguous(
+                q,
+                "q",
+                contig_kind,
+            )
+
             qk, qk_row_max = _C.qk_requant_rowmax_simd(
-                q.contiguous(),
-                k.contiguous(),
+                q_contig,
+                k_contig,
                 attn_mask,
                 self.qk_req_multiplier,
                 self.qk_req_shiftmount
             )
+            
         
         elif self.backend == "check":
             q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
@@ -876,7 +1042,36 @@ class MultiHeadAttention_int(nn.Module):
         else:
             raise NotImplementedError(f"Backend {self.backend} is not implemented.")
 
-        v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 3, 1)
+
+
+        if (
+            self.backend == "simd"
+            and is_cross_attention
+            and kv_cache is not None
+        ):
+            packed_v_key = (
+                self.value,
+                "iwhisper_cross_v_packed",
+            )
+
+            if packed_v_key in kv_cache:
+                v = kv_cache[packed_v_key]
+            else:
+                v = v.view(
+                    *v.shape[:2],
+                    self.n_head,
+                    -1
+                ).permute(0, 2, 3, 1).contiguous()
+
+                kv_cache[packed_v_key] = v
+        else:
+            v = v.view(
+                *v.shape[:2],
+                self.n_head,
+                -1
+            ).permute(0, 2, 3, 1)
+            
+            
 
         if self.backend == "torch":
             qk_exp, qk_exp_sum = self.shift_exp(
@@ -934,10 +1129,28 @@ class MultiHeadAttention_int(nn.Module):
                 self.rsqrt_offset,
             )
         elif self.backend == "simd":
+            qk_exp_contig = _profile_contiguous(
+                qk_exp,
+                "qk_exp",
+                contig_kind,
+            )
+
+            v_contig = _profile_contiguous(
+                v,
+                "v",
+                contig_kind,
+            )
+
+            qk_exp_sum_contig = _profile_contiguous(
+                qk_exp_sum,
+                "qk_exp_sum",
+                contig_kind,
+            )
+
             out = _C.pv_norm_requant_simd(
-                qk_exp.contiguous(),
-                v.contiguous(),
-                qk_exp_sum.contiguous(),
+                qk_exp_contig,
+                v_contig,
+                qk_exp_sum_contig,
                 self.av_req_multiplier,
                 self.av_req_shiftmount,
                 self.rsqrt_offset,
