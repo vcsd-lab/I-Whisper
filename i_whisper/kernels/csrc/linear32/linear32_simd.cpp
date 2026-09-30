@@ -7,6 +7,83 @@
 
 namespace iwhisper
 {
+#ifdef IWHISPER_USE_DOTPROD
+
+    static inline void dot_product2x4_simd(
+        const int8_t *x0,
+        const int8_t *x1,
+        const int8_t *w0,
+        const int8_t *w1,
+        const int8_t *w2,
+        const int8_t *w3,
+        int64_t K,
+        int32_t out0[4],
+        int32_t out1[4])
+    {
+        int64_t k = 0;
+
+        int32x4_t acc00 = vdupq_n_s32(0);
+        int32x4_t acc01 = vdupq_n_s32(0);
+        int32x4_t acc02 = vdupq_n_s32(0);
+        int32x4_t acc03 = vdupq_n_s32(0);
+
+        int32x4_t acc10 = vdupq_n_s32(0);
+        int32x4_t acc11 = vdupq_n_s32(0);
+        int32x4_t acc12 = vdupq_n_s32(0);
+        int32x4_t acc13 = vdupq_n_s32(0);
+
+        for (; k + 15 < K; k += 16)
+        {
+            const int8x16_t vx0 = vld1q_s8(x0 + k);
+            const int8x16_t vx1 = vld1q_s8(x1 + k);
+
+            const int8x16_t vw0 = vld1q_s8(w0 + k);
+            const int8x16_t vw1 = vld1q_s8(w1 + k);
+            const int8x16_t vw2 = vld1q_s8(w2 + k);
+            const int8x16_t vw3 = vld1q_s8(w3 + k);
+
+            acc00 = vdotq_s32(acc00, vx0, vw0);
+            acc01 = vdotq_s32(acc01, vx0, vw1);
+            acc02 = vdotq_s32(acc02, vx0, vw2);
+            acc03 = vdotq_s32(acc03, vx0, vw3);
+
+            acc10 = vdotq_s32(acc10, vx1, vw0);
+            acc11 = vdotq_s32(acc11, vx1, vw1);
+            acc12 = vdotq_s32(acc12, vx1, vw2);
+            acc13 = vdotq_s32(acc13, vx1, vw3);
+        }
+
+        out0[0] = vaddvq_s32(acc00);
+        out0[1] = vaddvq_s32(acc01);
+        out0[2] = vaddvq_s32(acc02);
+        out0[3] = vaddvq_s32(acc03);
+
+        out1[0] = vaddvq_s32(acc10);
+        out1[1] = vaddvq_s32(acc11);
+        out1[2] = vaddvq_s32(acc12);
+        out1[3] = vaddvq_s32(acc13);
+
+        for (; k < K; ++k)
+        {
+            const int32_t xv0 =
+                static_cast<int32_t>(x0[k]);
+
+            const int32_t xv1 =
+                static_cast<int32_t>(x1[k]);
+
+            out0[0] += xv0 * static_cast<int32_t>(w0[k]);
+            out0[1] += xv0 * static_cast<int32_t>(w1[k]);
+            out0[2] += xv0 * static_cast<int32_t>(w2[k]);
+            out0[3] += xv0 * static_cast<int32_t>(w3[k]);
+
+            out1[0] += xv1 * static_cast<int32_t>(w0[k]);
+            out1[1] += xv1 * static_cast<int32_t>(w1[k]);
+            out1[2] += xv1 * static_cast<int32_t>(w2[k]);
+            out1[3] += xv1 * static_cast<int32_t>(w3[k]);
+        }
+    }
+
+#endif
 
     static inline int32_t dot_product_simd(
         const int8_t *x,
@@ -202,6 +279,222 @@ namespace iwhisper
         bool has_bias,
         bool asymmetric)
     {
+#ifdef IWHISPER_USE_DOTPROD
+
+        if (M >= 16)
+        {
+            const int64_t m_tiles =
+                M / 2;
+
+            at::parallel_for(
+                0,
+                m_tiles,
+                1,
+                [&](int64_t begin, int64_t end)
+                {
+                    for (int64_t mt = begin;
+                         mt < end;
+                         ++mt)
+                    {
+                        const int64_t m0 =
+                            mt * 2;
+
+                        const int64_t m1 =
+                            m0 + 1;
+
+                        const int8_t *x0 =
+                            x + m0 * K;
+
+                        const int8_t *x1 =
+                            x + m1 * K;
+
+                        const int32_t x_sum0 =
+                            asymmetric
+                                ? row_sum_simd(x0, K)
+                                : 0;
+
+                        const int32_t x_sum1 =
+                            asymmetric
+                                ? row_sum_simd(x1, K)
+                                : 0;
+
+                        int64_t n = 0;
+
+                        for (; n + 3 < N; n += 4)
+                        {
+                            const int8_t *w0 =
+                                weight + (n + 0) * K;
+
+                            const int8_t *w1 =
+                                weight + (n + 1) * K;
+
+                            const int8_t *w2 =
+                                weight + (n + 2) * K;
+
+                            const int8_t *w3 =
+                                weight + (n + 3) * K;
+
+                            int32_t acc0[4];
+                            int32_t acc1[4];
+
+                            dot_product2x4_simd(
+                                x0,
+                                x1,
+                                w0,
+                                w1,
+                                w2,
+                                w3,
+                                K,
+                                acc0,
+                                acc1);
+
+                            for (int64_t j = 0;
+                                 j < 4;
+                                 ++j)
+                            {
+                                if (has_bias)
+                                {
+                                    acc0[j] +=
+                                        bias[n + j];
+
+                                    acc1[j] +=
+                                        bias[n + j];
+                                }
+
+                                if (asymmetric)
+                                {
+                                    const int32_t wz =
+                                        static_cast<int32_t>(
+                                            weight_zero[n + j]);
+
+                                    acc0[j] -=
+                                        x_sum0 * wz;
+
+                                    acc1[j] -=
+                                        x_sum1 * wz;
+                                }
+
+                                output[m0 * N +
+                                       n + j] =
+                                    requant32(
+                                        acc0[j],
+                                        multiplier[n + j],
+                                        shift[n + j]);
+
+                                output[m1 * N +
+                                       n + j] =
+                                    requant32(
+                                        acc1[j],
+                                        multiplier[n + j],
+                                        shift[n + j]);
+                            }
+                        }
+
+                        // N tail
+                        for (; n < N; ++n)
+                        {
+                            const int8_t *w_row =
+                                weight + n * K;
+
+                            int32_t acc0 =
+                                dot_product_simd(
+                                    x0,
+                                    w_row,
+                                    K);
+
+                            int32_t acc1 =
+                                dot_product_simd(
+                                    x1,
+                                    w_row,
+                                    K);
+
+                            if (has_bias)
+                            {
+                                acc0 += bias[n];
+                                acc1 += bias[n];
+                            }
+
+                            if (asymmetric)
+                            {
+                                const int32_t wz =
+                                    static_cast<int32_t>(
+                                        weight_zero[n]);
+
+                                acc0 -=
+                                    x_sum0 * wz;
+
+                                acc1 -=
+                                    x_sum1 * wz;
+                            }
+
+                            output[m0 * N + n] =
+                                requant32(
+                                    acc0,
+                                    multiplier[n],
+                                    shift[n]);
+
+                            output[m1 * N + n] =
+                                requant32(
+                                    acc1,
+                                    multiplier[n],
+                                    shift[n]);
+                        }
+                    }
+                });
+
+            // Odd-M tail
+            if ((M & 1) != 0)
+            {
+                const int64_t m =
+                    M - 1;
+
+                const int8_t *x_row =
+                    x + m * K;
+
+                const int32_t x_sum =
+                    asymmetric
+                        ? row_sum_simd(x_row, K)
+                        : 0;
+
+                for (int64_t n = 0;
+                     n < N;
+                     ++n)
+                {
+                    const int8_t *w_row =
+                        weight + n * K;
+
+                    int32_t acc =
+                        dot_product_simd(
+                            x_row,
+                            w_row,
+                            K);
+
+                    if (has_bias)
+                    {
+                        acc += bias[n];
+                    }
+
+                    if (asymmetric)
+                    {
+                        acc -=
+                            x_sum *
+                            static_cast<int32_t>(
+                                weight_zero[n]);
+                    }
+
+                    output[m * N + n] =
+                        requant32(
+                            acc,
+                            multiplier[n],
+                            shift[n]);
+                }
+            }
+
+            return;
+        }
+
+#endif
+
         at::parallel_for(
             0,
             M,
