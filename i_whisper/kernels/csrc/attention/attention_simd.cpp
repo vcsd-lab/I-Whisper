@@ -2,6 +2,7 @@
 #include "../common/simd.h"
 #include "../common/fixedpoint.h"
 #include "../layernorm/layernorm.h"
+#include "../common/dotprod_gemm.h"
 
 #include <ATen/Parallel.h>
 
@@ -516,130 +517,6 @@ namespace iwhisper
             out3[1] = s32_from_bits(bits31);
             out3[2] = s32_from_bits(bits32);
             out3[3] = s32_from_bits(bits33);
-        }
-        static inline void dot_s8_4x4_dotprod(
-            const int8_t *q0,
-            const int8_t *q1,
-            const int8_t *q2,
-            const int8_t *q3,
-            const int8_t *k0,
-            const int8_t *k1,
-            const int8_t *k2,
-            const int8_t *k3,
-            int64_t length,
-            int32_t out0[4],
-            int32_t out1[4],
-            int32_t out2[4],
-            int32_t out3[4])
-        {
-            int64_t d = 0;
-
-            int32x4_t acc00 = vdupq_n_s32(0);
-            int32x4_t acc01 = vdupq_n_s32(0);
-            int32x4_t acc02 = vdupq_n_s32(0);
-            int32x4_t acc03 = vdupq_n_s32(0);
-
-            int32x4_t acc10 = vdupq_n_s32(0);
-            int32x4_t acc11 = vdupq_n_s32(0);
-            int32x4_t acc12 = vdupq_n_s32(0);
-            int32x4_t acc13 = vdupq_n_s32(0);
-
-            int32x4_t acc20 = vdupq_n_s32(0);
-            int32x4_t acc21 = vdupq_n_s32(0);
-            int32x4_t acc22 = vdupq_n_s32(0);
-            int32x4_t acc23 = vdupq_n_s32(0);
-
-            int32x4_t acc30 = vdupq_n_s32(0);
-            int32x4_t acc31 = vdupq_n_s32(0);
-            int32x4_t acc32 = vdupq_n_s32(0);
-            int32x4_t acc33 = vdupq_n_s32(0);
-
-            for (; d + 15 < length; d += 16)
-            {
-                const int8x16_t vq0 = vld1q_s8(q0 + d);
-                const int8x16_t vq1 = vld1q_s8(q1 + d);
-                const int8x16_t vq2 = vld1q_s8(q2 + d);
-                const int8x16_t vq3 = vld1q_s8(q3 + d);
-
-                const int8x16_t vk0 = vld1q_s8(k0 + d);
-                const int8x16_t vk1 = vld1q_s8(k1 + d);
-                const int8x16_t vk2 = vld1q_s8(k2 + d);
-                const int8x16_t vk3 = vld1q_s8(k3 + d);
-
-                acc00 = vdotq_s32(acc00, vq0, vk0);
-                acc01 = vdotq_s32(acc01, vq0, vk1);
-                acc02 = vdotq_s32(acc02, vq0, vk2);
-                acc03 = vdotq_s32(acc03, vq0, vk3);
-
-                acc10 = vdotq_s32(acc10, vq1, vk0);
-                acc11 = vdotq_s32(acc11, vq1, vk1);
-                acc12 = vdotq_s32(acc12, vq1, vk2);
-                acc13 = vdotq_s32(acc13, vq1, vk3);
-
-                acc20 = vdotq_s32(acc20, vq2, vk0);
-                acc21 = vdotq_s32(acc21, vq2, vk1);
-                acc22 = vdotq_s32(acc22, vq2, vk2);
-                acc23 = vdotq_s32(acc23, vq2, vk3);
-
-                acc30 = vdotq_s32(acc30, vq3, vk0);
-                acc31 = vdotq_s32(acc31, vq3, vk1);
-                acc32 = vdotq_s32(acc32, vq3, vk2);
-                acc33 = vdotq_s32(acc33, vq3, vk3);
-            }
-
-            out0[0] = vaddvq_s32(acc00);
-            out0[1] = vaddvq_s32(acc01);
-            out0[2] = vaddvq_s32(acc02);
-            out0[3] = vaddvq_s32(acc03);
-
-            out1[0] = vaddvq_s32(acc10);
-            out1[1] = vaddvq_s32(acc11);
-            out1[2] = vaddvq_s32(acc12);
-            out1[3] = vaddvq_s32(acc13);
-
-            out2[0] = vaddvq_s32(acc20);
-            out2[1] = vaddvq_s32(acc21);
-            out2[2] = vaddvq_s32(acc22);
-            out2[3] = vaddvq_s32(acc23);
-
-            out3[0] = vaddvq_s32(acc30);
-            out3[1] = vaddvq_s32(acc31);
-            out3[2] = vaddvq_s32(acc32);
-            out3[3] = vaddvq_s32(acc33);
-
-            // Generic D tail.
-            for (; d < length; ++d)
-            {
-                const int32_t qv0 = static_cast<int32_t>(q0[d]);
-                const int32_t qv1 = static_cast<int32_t>(q1[d]);
-                const int32_t qv2 = static_cast<int32_t>(q2[d]);
-                const int32_t qv3 = static_cast<int32_t>(q3[d]);
-
-                const int32_t kv0 = static_cast<int32_t>(k0[d]);
-                const int32_t kv1 = static_cast<int32_t>(k1[d]);
-                const int32_t kv2 = static_cast<int32_t>(k2[d]);
-                const int32_t kv3 = static_cast<int32_t>(k3[d]);
-
-                out0[0] += qv0 * kv0;
-                out0[1] += qv0 * kv1;
-                out0[2] += qv0 * kv2;
-                out0[3] += qv0 * kv3;
-
-                out1[0] += qv1 * kv0;
-                out1[1] += qv1 * kv1;
-                out1[2] += qv1 * kv2;
-                out1[3] += qv1 * kv3;
-
-                out2[0] += qv2 * kv0;
-                out2[1] += qv2 * kv1;
-                out2[2] += qv2 * kv2;
-                out2[3] += qv2 * kv3;
-
-                out3[0] += qv3 * kv0;
-                out3[1] += qv3 * kv1;
-                out3[2] += qv3 * kv2;
-                out3[3] += qv3 * kv3;
-            }
         }
 
 #endif
@@ -1609,7 +1486,7 @@ namespace iwhisper
                             int32_t dots2[4];
                             int32_t dots3[4];
 
-                            dot_s8_4x4_dotprod(
+                            iwhisper::dotprod::dot_s8s8_4x4(
                                 q0,
                                 q1,
                                 q2,

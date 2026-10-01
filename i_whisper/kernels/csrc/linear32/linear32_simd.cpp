@@ -1,153 +1,13 @@
 #include "linear32.h"
 #include "../common/fixedpoint.h"
 #include "../common/simd.h"
+#include "../common/dotprod_gemm.h"
 
 #include <ATen/Parallel.h>
 #include <cstdint>
 
 namespace iwhisper
 {
-#ifdef IWHISPER_USE_DOTPROD
-
-    static inline void dot_product4x4_simd(
-        const int8_t *x0,
-        const int8_t *x1,
-        const int8_t *x2,
-        const int8_t *x3,
-        const int8_t *w0,
-        const int8_t *w1,
-        const int8_t *w2,
-        const int8_t *w3,
-        int64_t K,
-        int32_t out0[4],
-        int32_t out1[4],
-        int32_t out2[4],
-        int32_t out3[4])
-    {
-        int64_t k = 0;
-
-        int32x4_t acc00 = vdupq_n_s32(0);
-        int32x4_t acc01 = vdupq_n_s32(0);
-        int32x4_t acc02 = vdupq_n_s32(0);
-        int32x4_t acc03 = vdupq_n_s32(0);
-
-        int32x4_t acc10 = vdupq_n_s32(0);
-        int32x4_t acc11 = vdupq_n_s32(0);
-        int32x4_t acc12 = vdupq_n_s32(0);
-        int32x4_t acc13 = vdupq_n_s32(0);
-
-        int32x4_t acc20 = vdupq_n_s32(0);
-        int32x4_t acc21 = vdupq_n_s32(0);
-        int32x4_t acc22 = vdupq_n_s32(0);
-        int32x4_t acc23 = vdupq_n_s32(0);
-
-        int32x4_t acc30 = vdupq_n_s32(0);
-        int32x4_t acc31 = vdupq_n_s32(0);
-        int32x4_t acc32 = vdupq_n_s32(0);
-        int32x4_t acc33 = vdupq_n_s32(0);
-
-        for (; k + 15 < K; k += 16)
-        {
-            const int8x16_t vx0 = vld1q_s8(x0 + k);
-            const int8x16_t vx1 = vld1q_s8(x1 + k);
-            const int8x16_t vx2 = vld1q_s8(x2 + k);
-            const int8x16_t vx3 = vld1q_s8(x3 + k);
-
-            const int8x16_t vw0 = vld1q_s8(w0 + k);
-            const int8x16_t vw1 = vld1q_s8(w1 + k);
-            const int8x16_t vw2 = vld1q_s8(w2 + k);
-            const int8x16_t vw3 = vld1q_s8(w3 + k);
-
-            acc00 = vdotq_s32(acc00, vx0, vw0);
-            acc01 = vdotq_s32(acc01, vx0, vw1);
-            acc02 = vdotq_s32(acc02, vx0, vw2);
-            acc03 = vdotq_s32(acc03, vx0, vw3);
-
-            acc10 = vdotq_s32(acc10, vx1, vw0);
-            acc11 = vdotq_s32(acc11, vx1, vw1);
-            acc12 = vdotq_s32(acc12, vx1, vw2);
-            acc13 = vdotq_s32(acc13, vx1, vw3);
-
-            acc20 = vdotq_s32(acc20, vx2, vw0);
-            acc21 = vdotq_s32(acc21, vx2, vw1);
-            acc22 = vdotq_s32(acc22, vx2, vw2);
-            acc23 = vdotq_s32(acc23, vx2, vw3);
-
-            acc30 = vdotq_s32(acc30, vx3, vw0);
-            acc31 = vdotq_s32(acc31, vx3, vw1);
-            acc32 = vdotq_s32(acc32, vx3, vw2);
-            acc33 = vdotq_s32(acc33, vx3, vw3);
-        }
-
-        out0[0] = vaddvq_s32(acc00);
-        out0[1] = vaddvq_s32(acc01);
-        out0[2] = vaddvq_s32(acc02);
-        out0[3] = vaddvq_s32(acc03);
-
-        out1[0] = vaddvq_s32(acc10);
-        out1[1] = vaddvq_s32(acc11);
-        out1[2] = vaddvq_s32(acc12);
-        out1[3] = vaddvq_s32(acc13);
-
-        out2[0] = vaddvq_s32(acc20);
-        out2[1] = vaddvq_s32(acc21);
-        out2[2] = vaddvq_s32(acc22);
-        out2[3] = vaddvq_s32(acc23);
-
-        out3[0] = vaddvq_s32(acc30);
-        out3[1] = vaddvq_s32(acc31);
-        out3[2] = vaddvq_s32(acc32);
-        out3[3] = vaddvq_s32(acc33);
-
-        for (; k < K; ++k)
-        {
-            const int32_t xv0 =
-                static_cast<int32_t>(x0[k]);
-
-            const int32_t xv1 =
-                static_cast<int32_t>(x1[k]);
-
-            const int32_t xv2 =
-                static_cast<int32_t>(x2[k]);
-
-            const int32_t xv3 =
-                static_cast<int32_t>(x3[k]);
-
-            const int32_t wv0 =
-                static_cast<int32_t>(w0[k]);
-
-            const int32_t wv1 =
-                static_cast<int32_t>(w1[k]);
-
-            const int32_t wv2 =
-                static_cast<int32_t>(w2[k]);
-
-            const int32_t wv3 =
-                static_cast<int32_t>(w3[k]);
-
-            out0[0] += xv0 * wv0;
-            out0[1] += xv0 * wv1;
-            out0[2] += xv0 * wv2;
-            out0[3] += xv0 * wv3;
-
-            out1[0] += xv1 * wv0;
-            out1[1] += xv1 * wv1;
-            out1[2] += xv1 * wv2;
-            out1[3] += xv1 * wv3;
-
-            out2[0] += xv2 * wv0;
-            out2[1] += xv2 * wv1;
-            out2[2] += xv2 * wv2;
-            out2[3] += xv2 * wv3;
-
-            out3[0] += xv3 * wv0;
-            out3[1] += xv3 * wv1;
-            out3[2] += xv3 * wv2;
-            out3[3] += xv3 * wv3;
-        }
-    }
-
-#endif
 
 #ifdef IWHISPER_USE_DOTPROD
 
@@ -510,7 +370,7 @@ namespace iwhisper
                             int32_t acc2[4];
                             int32_t acc3[4];
 
-                            dot_product4x4_simd(
+                            iwhisper::dotprod::dot_s8s8_4x4(
                                 x0,
                                 x1,
                                 x2,
