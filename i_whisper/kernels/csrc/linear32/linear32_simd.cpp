@@ -1,12 +1,14 @@
 #include "linear32.h"
 #include "../common/fixedpoint.h"
 #include "../common/simd.h"
+#include "../common/dotprod_gemm.h"
 
 #include <ATen/Parallel.h>
 #include <cstdint>
 
 namespace iwhisper
 {
+
 #ifdef IWHISPER_USE_DOTPROD
 
     static inline void dot_product2x4_simd(
@@ -281,6 +283,268 @@ namespace iwhisper
     {
 #ifdef IWHISPER_USE_DOTPROD
 
+        // ========================================================
+        // Large-M 4x4 tiled GEMM path
+        // ========================================================
+        if (M >= 32 &&
+            (M % 4) == 0)
+        {
+            const int64_t m_tiles =
+                M / 4;
+
+            at::parallel_for(
+                0,
+                m_tiles,
+                1,
+                [&](int64_t begin, int64_t end)
+                {
+                    for (int64_t mt = begin;
+                         mt < end;
+                         ++mt)
+                    {
+                        const int64_t m0 =
+                            mt * 4;
+
+                        const int64_t m1 =
+                            m0 + 1;
+
+                        const int64_t m2 =
+                            m0 + 2;
+
+                        const int64_t m3 =
+                            m0 + 3;
+
+                        const int8_t *x0 =
+                            x + m0 * K;
+
+                        const int8_t *x1 =
+                            x + m1 * K;
+
+                        const int8_t *x2 =
+                            x + m2 * K;
+
+                        const int8_t *x3 =
+                            x + m3 * K;
+
+                        const int32_t x_sum0 =
+                            asymmetric
+                                ? row_sum_simd(x0, K)
+                                : 0;
+
+                        const int32_t x_sum1 =
+                            asymmetric
+                                ? row_sum_simd(x1, K)
+                                : 0;
+
+                        const int32_t x_sum2 =
+                            asymmetric
+                                ? row_sum_simd(x2, K)
+                                : 0;
+
+                        const int32_t x_sum3 =
+                            asymmetric
+                                ? row_sum_simd(x3, K)
+                                : 0;
+
+                        int64_t n = 0;
+
+                        // ----------------------------------------
+                        // 4 input rows x 4 output channels
+                        // ----------------------------------------
+                        for (; n + 3 < N; n += 4)
+                        {
+                            const int8_t *w0 =
+                                weight + (n + 0) * K;
+
+                            const int8_t *w1 =
+                                weight + (n + 1) * K;
+
+                            const int8_t *w2 =
+                                weight + (n + 2) * K;
+
+                            const int8_t *w3 =
+                                weight + (n + 3) * K;
+
+                            int32_t acc0[4];
+                            int32_t acc1[4];
+                            int32_t acc2[4];
+                            int32_t acc3[4];
+
+                            iwhisper::dotprod::dot_s8s8_4x4(
+                                x0,
+                                x1,
+                                x2,
+                                x3,
+                                w0,
+                                w1,
+                                w2,
+                                w3,
+                                K,
+                                acc0,
+                                acc1,
+                                acc2,
+                                acc3);
+
+                            for (int64_t j = 0;
+                                 j < 4;
+                                 ++j)
+                            {
+                                if (has_bias)
+                                {
+                                    acc0[j] +=
+                                        bias[n + j];
+
+                                    acc1[j] +=
+                                        bias[n + j];
+
+                                    acc2[j] +=
+                                        bias[n + j];
+
+                                    acc3[j] +=
+                                        bias[n + j];
+                                }
+
+                                if (asymmetric)
+                                {
+                                    const int32_t wz =
+                                        static_cast<int32_t>(
+                                            weight_zero[n + j]);
+
+                                    acc0[j] -=
+                                        x_sum0 * wz;
+
+                                    acc1[j] -=
+                                        x_sum1 * wz;
+
+                                    acc2[j] -=
+                                        x_sum2 * wz;
+
+                                    acc3[j] -=
+                                        x_sum3 * wz;
+                                }
+
+                                output[m0 * N +
+                                       n + j] =
+                                    requant32(
+                                        acc0[j],
+                                        multiplier[n + j],
+                                        shift[n + j]);
+
+                                output[m1 * N +
+                                       n + j] =
+                                    requant32(
+                                        acc1[j],
+                                        multiplier[n + j],
+                                        shift[n + j]);
+
+                                output[m2 * N +
+                                       n + j] =
+                                    requant32(
+                                        acc2[j],
+                                        multiplier[n + j],
+                                        shift[n + j]);
+
+                                output[m3 * N +
+                                       n + j] =
+                                    requant32(
+                                        acc3[j],
+                                        multiplier[n + j],
+                                        shift[n + j]);
+                            }
+                        }
+
+                        // ----------------------------------------
+                        // N tail
+                        // ----------------------------------------
+                        for (; n < N; ++n)
+                        {
+                            const int8_t *w_row =
+                                weight + n * K;
+
+                            int32_t acc0 =
+                                dot_product_simd(
+                                    x0,
+                                    w_row,
+                                    K);
+
+                            int32_t acc1 =
+                                dot_product_simd(
+                                    x1,
+                                    w_row,
+                                    K);
+
+                            int32_t acc2 =
+                                dot_product_simd(
+                                    x2,
+                                    w_row,
+                                    K);
+
+                            int32_t acc3 =
+                                dot_product_simd(
+                                    x3,
+                                    w_row,
+                                    K);
+
+                            if (has_bias)
+                            {
+                                acc0 += bias[n];
+                                acc1 += bias[n];
+                                acc2 += bias[n];
+                                acc3 += bias[n];
+                            }
+
+                            if (asymmetric)
+                            {
+                                const int32_t wz =
+                                    static_cast<int32_t>(
+                                        weight_zero[n]);
+
+                                acc0 -=
+                                    x_sum0 * wz;
+
+                                acc1 -=
+                                    x_sum1 * wz;
+
+                                acc2 -=
+                                    x_sum2 * wz;
+
+                                acc3 -=
+                                    x_sum3 * wz;
+                            }
+
+                            output[m0 * N + n] =
+                                requant32(
+                                    acc0,
+                                    multiplier[n],
+                                    shift[n]);
+
+                            output[m1 * N + n] =
+                                requant32(
+                                    acc1,
+                                    multiplier[n],
+                                    shift[n]);
+
+                            output[m2 * N + n] =
+                                requant32(
+                                    acc2,
+                                    multiplier[n],
+                                    shift[n]);
+
+                            output[m3 * N + n] =
+                                requant32(
+                                    acc3,
+                                    multiplier[n],
+                                    shift[n]);
+                        }
+                    }
+                });
+
+            return;
+        }
+
+        // ========================================================
+        // Existing 2x4 path -- keep unchanged
+        // ========================================================
         if (M >= 16)
         {
             const int64_t m_tiles =

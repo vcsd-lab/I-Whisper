@@ -2,6 +2,7 @@
 #include "../common/simd.h"
 #include "../common/fixedpoint.h"
 #include "../layernorm/layernorm.h"
+#include "../common/dotprod_gemm.h"
 
 #include <ATen/Parallel.h>
 
@@ -170,24 +171,43 @@ namespace iwhisper
 
 #endif
 
-#ifdef IWHISPER_USE_DOTPROD
+        static inline int16_t s16_from_bits(
+            uint16_t bits)
+        {
+            const int32_t value =
+                (bits & uint16_t{0x8000})
+                    ? static_cast<int32_t>(bits) - 65536
+                    : static_cast<int32_t>(bits);
 
-        static inline void dot_s8_4x4_dotprod(
-            const int8_t *q0,
-            const int8_t *q1,
-            const int8_t *q2,
-            const int8_t *q3,
-            const int8_t *k0,
-            const int8_t *k1,
-            const int8_t *k2,
-            const int8_t *k3,
+            return static_cast<int16_t>(value);
+        }
+        static inline int32_t s32_from_bits(
+            uint32_t bits)
+        {
+            const int64_t value =
+                (bits & uint32_t{0x80000000u})
+                    ? static_cast<int64_t>(bits) - (int64_t{1} << 32)
+                    : static_cast<int64_t>(bits);
+
+            return static_cast<int32_t>(value);
+        }
+#ifdef IWHISPER_USE_DOTPROD
+        static inline void dot_u8_s8_4x4_neon(
+            const uint8_t *p0,
+            const uint8_t *p1,
+            const uint8_t *p2,
+            const uint8_t *p3,
+            const int8_t *v0,
+            const int8_t *v1,
+            const int8_t *v2,
+            const int8_t *v3,
             int64_t length,
             int32_t out0[4],
             int32_t out1[4],
             int32_t out2[4],
             int32_t out3[4])
         {
-            int64_t d = 0;
+            int64_t k = 0;
 
             int32x4_t acc00 = vdupq_n_s32(0);
             int32x4_t acc01 = vdupq_n_s32(0);
@@ -209,106 +229,297 @@ namespace iwhisper
             int32x4_t acc32 = vdupq_n_s32(0);
             int32x4_t acc33 = vdupq_n_s32(0);
 
-            for (; d + 15 < length; d += 16)
+            int32_t sum_v0 = 0;
+            int32_t sum_v1 = 0;
+            int32_t sum_v2 = 0;
+            int32_t sum_v3 = 0;
+
+            const uint8x16_t sign_flip =
+                vdupq_n_u8(uint8_t{0x80});
+
+            for (; k + 16 <= length; k += 16)
             {
-                const int8x16_t vq0 = vld1q_s8(q0 + d);
-                const int8x16_t vq1 = vld1q_s8(q1 + d);
-                const int8x16_t vq2 = vld1q_s8(q2 + d);
-                const int8x16_t vq3 = vld1q_s8(q3 + d);
+                const uint8x16_t pu0 =
+                    vld1q_u8(p0 + k);
 
-                const int8x16_t vk0 = vld1q_s8(k0 + d);
-                const int8x16_t vk1 = vld1q_s8(k1 + d);
-                const int8x16_t vk2 = vld1q_s8(k2 + d);
-                const int8x16_t vk3 = vld1q_s8(k3 + d);
+                const uint8x16_t pu1 =
+                    vld1q_u8(p1 + k);
 
-                acc00 = vdotq_s32(acc00, vq0, vk0);
-                acc01 = vdotq_s32(acc01, vq0, vk1);
-                acc02 = vdotq_s32(acc02, vq0, vk2);
-                acc03 = vdotq_s32(acc03, vq0, vk3);
+                const uint8x16_t pu2 =
+                    vld1q_u8(p2 + k);
 
-                acc10 = vdotq_s32(acc10, vq1, vk0);
-                acc11 = vdotq_s32(acc11, vq1, vk1);
-                acc12 = vdotq_s32(acc12, vq1, vk2);
-                acc13 = vdotq_s32(acc13, vq1, vk3);
+                const uint8x16_t pu3 =
+                    vld1q_u8(p3 + k);
 
-                acc20 = vdotq_s32(acc20, vq2, vk0);
-                acc21 = vdotq_s32(acc21, vq2, vk1);
-                acc22 = vdotq_s32(acc22, vq2, vk2);
-                acc23 = vdotq_s32(acc23, vq2, vk3);
+                const int8x16_t ps0 =
+                    vreinterpretq_s8_u8(
+                        veorq_u8(
+                            pu0,
+                            sign_flip));
 
-                acc30 = vdotq_s32(acc30, vq3, vk0);
-                acc31 = vdotq_s32(acc31, vq3, vk1);
-                acc32 = vdotq_s32(acc32, vq3, vk2);
-                acc33 = vdotq_s32(acc33, vq3, vk3);
+                const int8x16_t ps1 =
+                    vreinterpretq_s8_u8(
+                        veorq_u8(
+                            pu1,
+                            sign_flip));
+
+                const int8x16_t ps2 =
+                    vreinterpretq_s8_u8(
+                        veorq_u8(
+                            pu2,
+                            sign_flip));
+
+                const int8x16_t ps3 =
+                    vreinterpretq_s8_u8(
+                        veorq_u8(
+                            pu3,
+                            sign_flip));
+
+                const int8x16_t x0 =
+                    vld1q_s8(v0 + k);
+
+                const int8x16_t x1 =
+                    vld1q_s8(v1 + k);
+
+                const int8x16_t x2 =
+                    vld1q_s8(v2 + k);
+
+                const int8x16_t x3 =
+                    vld1q_s8(v3 + k);
+
+                acc00 = vdotq_s32(acc00, ps0, x0);
+                acc01 = vdotq_s32(acc01, ps0, x1);
+                acc02 = vdotq_s32(acc02, ps0, x2);
+                acc03 = vdotq_s32(acc03, ps0, x3);
+
+                acc10 = vdotq_s32(acc10, ps1, x0);
+                acc11 = vdotq_s32(acc11, ps1, x1);
+                acc12 = vdotq_s32(acc12, ps1, x2);
+                acc13 = vdotq_s32(acc13, ps1, x3);
+
+                acc20 = vdotq_s32(acc20, ps2, x0);
+                acc21 = vdotq_s32(acc21, ps2, x1);
+                acc22 = vdotq_s32(acc22, ps2, x2);
+                acc23 = vdotq_s32(acc23, ps2, x3);
+
+                acc30 = vdotq_s32(acc30, ps3, x0);
+                acc31 = vdotq_s32(acc31, ps3, x1);
+                acc32 = vdotq_s32(acc32, ps3, x2);
+                acc33 = vdotq_s32(acc33, ps3, x3);
+
+                // Four P rows share the same four V rows.
+                // Compute the unsigned correction once.
+                sum_v0 +=
+                    static_cast<int32_t>(
+                        vaddlvq_s8(x0));
+
+                sum_v1 +=
+                    static_cast<int32_t>(
+                        vaddlvq_s8(x1));
+
+                sum_v2 +=
+                    static_cast<int32_t>(
+                        vaddlvq_s8(x2));
+
+                sum_v3 +=
+                    static_cast<int32_t>(
+                        vaddlvq_s8(x3));
             }
 
-            out0[0] = vaddvq_s32(acc00);
-            out0[1] = vaddvq_s32(acc01);
-            out0[2] = vaddvq_s32(acc02);
-            out0[3] = vaddvq_s32(acc03);
+            uint32_t bits00 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc00));
+            uint32_t bits01 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc01));
+            uint32_t bits02 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc02));
+            uint32_t bits03 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc03));
 
-            out1[0] = vaddvq_s32(acc10);
-            out1[1] = vaddvq_s32(acc11);
-            out1[2] = vaddvq_s32(acc12);
-            out1[3] = vaddvq_s32(acc13);
+            uint32_t bits10 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc10));
+            uint32_t bits11 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc11));
+            uint32_t bits12 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc12));
+            uint32_t bits13 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc13));
 
-            out2[0] = vaddvq_s32(acc20);
-            out2[1] = vaddvq_s32(acc21);
-            out2[2] = vaddvq_s32(acc22);
-            out2[3] = vaddvq_s32(acc23);
+            uint32_t bits20 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc20));
+            uint32_t bits21 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc21));
+            uint32_t bits22 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc22));
+            uint32_t bits23 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc23));
 
-            out3[0] = vaddvq_s32(acc30);
-            out3[1] = vaddvq_s32(acc31);
-            out3[2] = vaddvq_s32(acc32);
-            out3[3] = vaddvq_s32(acc33);
+            uint32_t bits30 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc30));
+            uint32_t bits31 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc31));
+            uint32_t bits32 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc32));
+            uint32_t bits33 =
+                static_cast<uint32_t>(
+                    vaddvq_s32(acc33));
 
-            // Generic D tail.
-            for (; d < length; ++d)
+            const uint32_t corr0 =
+                static_cast<uint32_t>(
+                    sum_v0) *
+                uint32_t{128};
+
+            const uint32_t corr1 =
+                static_cast<uint32_t>(
+                    sum_v1) *
+                uint32_t{128};
+
+            const uint32_t corr2 =
+                static_cast<uint32_t>(
+                    sum_v2) *
+                uint32_t{128};
+
+            const uint32_t corr3 =
+                static_cast<uint32_t>(
+                    sum_v3) *
+                uint32_t{128};
+
+            bits00 += corr0;
+            bits01 += corr1;
+            bits02 += corr2;
+            bits03 += corr3;
+
+            bits10 += corr0;
+            bits11 += corr1;
+            bits12 += corr2;
+            bits13 += corr3;
+
+            bits20 += corr0;
+            bits21 += corr1;
+            bits22 += corr2;
+            bits23 += corr3;
+
+            bits30 += corr0;
+            bits31 += corr1;
+            bits32 += corr2;
+            bits33 += corr3;
+
+            // Generic scalar K tail uses original UINT8 x INT8 values.
+            for (; k < length; ++k)
             {
-                const int32_t qv0 = static_cast<int32_t>(q0[d]);
-                const int32_t qv1 = static_cast<int32_t>(q1[d]);
-                const int32_t qv2 = static_cast<int32_t>(q2[d]);
-                const int32_t qv3 = static_cast<int32_t>(q3[d]);
+                const int32_t pv0 =
+                    static_cast<int32_t>(p0[k]);
 
-                const int32_t kv0 = static_cast<int32_t>(k0[d]);
-                const int32_t kv1 = static_cast<int32_t>(k1[d]);
-                const int32_t kv2 = static_cast<int32_t>(k2[d]);
-                const int32_t kv3 = static_cast<int32_t>(k3[d]);
+                const int32_t pv1 =
+                    static_cast<int32_t>(p1[k]);
 
-                out0[0] += qv0 * kv0;
-                out0[1] += qv0 * kv1;
-                out0[2] += qv0 * kv2;
-                out0[3] += qv0 * kv3;
+                const int32_t pv2 =
+                    static_cast<int32_t>(p2[k]);
 
-                out1[0] += qv1 * kv0;
-                out1[1] += qv1 * kv1;
-                out1[2] += qv1 * kv2;
-                out1[3] += qv1 * kv3;
+                const int32_t pv3 =
+                    static_cast<int32_t>(p3[k]);
 
-                out2[0] += qv2 * kv0;
-                out2[1] += qv2 * kv1;
-                out2[2] += qv2 * kv2;
-                out2[3] += qv2 * kv3;
+                const int32_t vv0 =
+                    static_cast<int32_t>(v0[k]);
 
-                out3[0] += qv3 * kv0;
-                out3[1] += qv3 * kv1;
-                out3[2] += qv3 * kv2;
-                out3[3] += qv3 * kv3;
+                const int32_t vv1 =
+                    static_cast<int32_t>(v1[k]);
+
+                const int32_t vv2 =
+                    static_cast<int32_t>(v2[k]);
+
+                const int32_t vv3 =
+                    static_cast<int32_t>(v3[k]);
+
+                bits00 +=
+                    static_cast<uint32_t>(
+                        pv0 * vv0);
+                bits01 +=
+                    static_cast<uint32_t>(
+                        pv0 * vv1);
+                bits02 +=
+                    static_cast<uint32_t>(
+                        pv0 * vv2);
+                bits03 +=
+                    static_cast<uint32_t>(
+                        pv0 * vv3);
+
+                bits10 +=
+                    static_cast<uint32_t>(
+                        pv1 * vv0);
+                bits11 +=
+                    static_cast<uint32_t>(
+                        pv1 * vv1);
+                bits12 +=
+                    static_cast<uint32_t>(
+                        pv1 * vv2);
+                bits13 +=
+                    static_cast<uint32_t>(
+                        pv1 * vv3);
+
+                bits20 +=
+                    static_cast<uint32_t>(
+                        pv2 * vv0);
+                bits21 +=
+                    static_cast<uint32_t>(
+                        pv2 * vv1);
+                bits22 +=
+                    static_cast<uint32_t>(
+                        pv2 * vv2);
+                bits23 +=
+                    static_cast<uint32_t>(
+                        pv2 * vv3);
+
+                bits30 +=
+                    static_cast<uint32_t>(
+                        pv3 * vv0);
+                bits31 +=
+                    static_cast<uint32_t>(
+                        pv3 * vv1);
+                bits32 +=
+                    static_cast<uint32_t>(
+                        pv3 * vv2);
+                bits33 +=
+                    static_cast<uint32_t>(
+                        pv3 * vv3);
             }
+
+            out0[0] = s32_from_bits(bits00);
+            out0[1] = s32_from_bits(bits01);
+            out0[2] = s32_from_bits(bits02);
+            out0[3] = s32_from_bits(bits03);
+
+            out1[0] = s32_from_bits(bits10);
+            out1[1] = s32_from_bits(bits11);
+            out1[2] = s32_from_bits(bits12);
+            out1[3] = s32_from_bits(bits13);
+
+            out2[0] = s32_from_bits(bits20);
+            out2[1] = s32_from_bits(bits21);
+            out2[2] = s32_from_bits(bits22);
+            out2[3] = s32_from_bits(bits23);
+
+            out3[0] = s32_from_bits(bits30);
+            out3[1] = s32_from_bits(bits31);
+            out3[2] = s32_from_bits(bits32);
+            out3[3] = s32_from_bits(bits33);
         }
 
 #endif
-
-        static inline int16_t s16_from_bits(
-            uint16_t bits)
-        {
-            const int32_t value =
-                (bits & uint16_t{0x8000})
-                    ? static_cast<int32_t>(bits) - 65536
-                    : static_cast<int32_t>(bits);
-
-            return static_cast<int16_t>(value);
-        }
 
         static inline int16_t wrap_add_s16(
             int16_t a,
@@ -326,17 +537,6 @@ namespace iwhisper
             return s16_from_bits(
                 static_cast<uint16_t>(
                     static_cast<uint16_t>(a) - static_cast<uint16_t>(b)));
-        }
-
-        static inline int32_t s32_from_bits(
-            uint32_t bits)
-        {
-            const int64_t value =
-                (bits & uint32_t{0x80000000u})
-                    ? static_cast<int64_t>(bits) - (int64_t{1} << 32)
-                    : static_cast<int64_t>(bits);
-
-            return static_cast<int32_t>(value);
         }
 
         static inline int32_t wrap_mul_s32_u8(
@@ -1286,7 +1486,7 @@ namespace iwhisper
                             int32_t dots2[4];
                             int32_t dots3[4];
 
-                            dot_s8_4x4_dotprod(
+                            iwhisper::dotprod::dot_s8s8_4x4(
                                 q0,
                                 q1,
                                 q2,
@@ -2279,6 +2479,380 @@ namespace iwhisper
         }
 
 #ifdef IWHISPER_USE_DOTPROD
+        // ========================================================
+        // Large encoder 4x4 tiled PV path.
+        //
+        // Four probability rows share the same four V rows and
+        // the same UINT8-to-SINT8 correction terms.
+        // ========================================================
+        if (q_length >= 32 &&
+            (q_length % 4) == 0 &&
+            (head_dim % 4) == 0)
+        {
+            const int64_t q_tiles =
+                q_length / 4;
+
+            const int64_t tiled_work_items =
+                batch *
+                heads *
+                q_tiles;
+
+            at::parallel_for(
+                0,
+                tiled_work_items,
+                1,
+                [&](int64_t begin,
+                    int64_t end)
+                {
+                    for (int64_t tile = begin;
+                         tile < end;
+                         ++tile)
+                    {
+                        const int64_t qt =
+                            tile %
+                            q_tiles;
+
+                        const int64_t bh =
+                            tile /
+                            q_tiles;
+
+                        const int64_t h =
+                            bh %
+                            heads;
+
+                        const int64_t b =
+                            bh /
+                            heads;
+
+                        const int64_t qi0 =
+                            qt * 4;
+
+                        const int64_t qi1 =
+                            qi0 + 1;
+
+                        const int64_t qi2 =
+                            qi0 + 2;
+
+                        const int64_t qi3 =
+                            qi0 + 3;
+
+                        const int64_t p_head_base =
+                            bh *
+                            q_length *
+                            k_length;
+
+                        const int64_t v_head_base =
+                            bh *
+                            head_dim *
+                            k_length;
+
+                        const int64_t row0 =
+                            bh *
+                                q_length +
+                            qi0;
+
+                        const int64_t row1 =
+                            row0 + 1;
+
+                        const int64_t row2 =
+                            row0 + 2;
+
+                        const int64_t row3 =
+                            row0 + 3;
+
+                        const int32_t sum0 =
+                            row_sum[row0];
+
+                        const int32_t sum1 =
+                            row_sum[row1];
+
+                        const int32_t sum2 =
+                            row_sum[row2];
+
+                        const int32_t sum3 =
+                            row_sum[row3];
+
+                        int32_t inv0 = 0;
+                        int32_t inv1 = 0;
+                        int32_t inv2 = 0;
+                        int32_t inv3 = 0;
+
+                        iwhisper::layernorm32_rsqrt_scalar(
+                            &sum0,
+                            &inv0,
+                            1,
+                            rsqrt_offset);
+
+                        iwhisper::layernorm32_rsqrt_scalar(
+                            &sum1,
+                            &inv1,
+                            1,
+                            rsqrt_offset);
+
+                        iwhisper::layernorm32_rsqrt_scalar(
+                            &sum2,
+                            &inv2,
+                            1,
+                            rsqrt_offset);
+
+                        iwhisper::layernorm32_rsqrt_scalar(
+                            &sum3,
+                            &inv3,
+                            1,
+                            rsqrt_offset);
+
+                        const uint8_t *p0 =
+                            p +
+                            p_head_base +
+                            qi0 *
+                                k_length;
+
+                        const uint8_t *p1 =
+                            p +
+                            p_head_base +
+                            qi1 *
+                                k_length;
+
+                        const uint8_t *p2 =
+                            p +
+                            p_head_base +
+                            qi2 *
+                                k_length;
+
+                        const uint8_t *p3 =
+                            p +
+                            p_head_base +
+                            qi3 *
+                                k_length;
+
+                        int8_t *out0 =
+                            output +
+                            (b * q_length + qi0) *
+                                (heads * head_dim) +
+                            h * head_dim;
+
+                        int8_t *out1 =
+                            output +
+                            (b * q_length + qi1) *
+                                (heads * head_dim) +
+                            h * head_dim;
+
+                        int8_t *out2 =
+                            output +
+                            (b * q_length + qi2) *
+                                (heads * head_dim) +
+                            h * head_dim;
+
+                        int8_t *out3 =
+                            output +
+                            (b * q_length + qi3) *
+                                (heads * head_dim) +
+                            h * head_dim;
+
+                        for (int64_t d = 0;
+                             d < head_dim;
+                             d += 4)
+                        {
+                            const int8_t *v0 =
+                                v +
+                                v_head_base +
+                                (d + 0) *
+                                    k_length;
+
+                            const int8_t *v1 =
+                                v +
+                                v_head_base +
+                                (d + 1) *
+                                    k_length;
+
+                            const int8_t *v2 =
+                                v +
+                                v_head_base +
+                                (d + 2) *
+                                    k_length;
+
+                            const int8_t *v3 =
+                                v +
+                                v_head_base +
+                                (d + 3) *
+                                    k_length;
+
+                            alignas(16)
+                                int32_t dots0[4];
+
+                            alignas(16)
+                                int32_t dots1[4];
+
+                            alignas(16)
+                                int32_t dots2[4];
+
+                            alignas(16)
+                                int32_t dots3[4];
+
+                            dot_u8_s8_4x4_neon(
+                                p0,
+                                p1,
+                                p2,
+                                p3,
+                                v0,
+                                v1,
+                                v2,
+                                v3,
+                                k_length,
+                                dots0,
+                                dots1,
+                                dots2,
+                                dots3);
+
+                            int32x4_t values0 =
+                                vld1q_s32(
+                                    dots0);
+
+                            int32x4_t values1 =
+                                vld1q_s32(
+                                    dots1);
+
+                            int32x4_t values2 =
+                                vld1q_s32(
+                                    dots2);
+
+                            int32x4_t values3 =
+                                vld1q_s32(
+                                    dots3);
+
+                            values0 =
+                                postprocess_pv_s32x4(
+                                    values0,
+                                    inv0,
+                                    rsqrt_offset,
+                                    av_multiplier,
+                                    requant_shift);
+
+                            values1 =
+                                postprocess_pv_s32x4(
+                                    values1,
+                                    inv1,
+                                    rsqrt_offset,
+                                    av_multiplier,
+                                    requant_shift);
+
+                            values2 =
+                                postprocess_pv_s32x4(
+                                    values2,
+                                    inv2,
+                                    rsqrt_offset,
+                                    av_multiplier,
+                                    requant_shift);
+
+                            values3 =
+                                postprocess_pv_s32x4(
+                                    values3,
+                                    inv3,
+                                    rsqrt_offset,
+                                    av_multiplier,
+                                    requant_shift);
+
+                            out0[d + 0] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values0,
+                                        0));
+
+                            out0[d + 1] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values0,
+                                        1));
+
+                            out0[d + 2] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values0,
+                                        2));
+
+                            out0[d + 3] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values0,
+                                        3));
+
+                            out1[d + 0] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values1,
+                                        0));
+
+                            out1[d + 1] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values1,
+                                        1));
+
+                            out1[d + 2] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values1,
+                                        2));
+
+                            out1[d + 3] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values1,
+                                        3));
+
+                            out2[d + 0] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values2,
+                                        0));
+
+                            out2[d + 1] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values2,
+                                        1));
+
+                            out2[d + 2] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values2,
+                                        2));
+
+                            out2[d + 3] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values2,
+                                        3));
+
+                            out3[d + 0] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values3,
+                                        0));
+
+                            out3[d + 1] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values3,
+                                        1));
+
+                            out3[d + 2] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values3,
+                                        2));
+
+                            out3[d + 3] =
+                                static_cast<int8_t>(
+                                    vgetq_lane_s32(
+                                        values3,
+                                        3));
+                        }
+                    }
+                });
+
+            return;
+        }
 
         if (q_length >= 16 &&
             (q_length % 2) == 0 &&

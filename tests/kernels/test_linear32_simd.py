@@ -108,6 +108,12 @@ def test_linear32_accum_simd_matches_scalar(
         (3, 31, 5),
         (3, 32, 5),
         (3, 33, 5),
+        # Large-M tiled paths
+        (31, 512, 8),   # 2x4 fallback
+        (32, 512, 8),   # 4x4 path
+        (36, 512, 8),   # multiple 4x4 M tiles
+        (32, 513, 8),   # K tail
+        (32, 512, 7),   # N tail
     ],
 )
 @pytest.mark.parametrize(
