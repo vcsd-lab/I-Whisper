@@ -198,6 +198,12 @@ def test_attn_pv_simd_int32_wrap():
         (1, 8, 1, 32, 64),
         (1, 8, 1, 33, 65),
         (1, 8, 12, 64, 64),
+        # Tiled fast paths
+        (1, 2, 18, 64, 64),  # 2x4 fallback
+        (1, 2, 32, 64, 64),  # 4x4 path
+        (1, 2, 36, 64, 64),  # multiple 4x4 tiles
+        (1, 2, 32, 65, 64),  # K tail
+        (1, 8, 32, 64, 64),  # Whisper-like heads
     ],
 )
 @pytest.mark.parametrize(
