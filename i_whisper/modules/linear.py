@@ -80,7 +80,7 @@ class Linear8(LinearBase):
         "integer inference (all int computation)"
         assert x.dtype == torch.int8, "Input activation must be int8 in integer inference mode!"
         '''INT8xINT8 --> INT32 MatMul'''
-        out = torch.matmul(x.int(), self.weight.int().t())
+        out = int8_linear_matmul(x.contiguous(), self.weight.contiguous()) if x.device.type == 'cuda' else torch.matmul(x.int(), self.weight.int().t())
         
         if self.bias is not None:
             '''bias addition'''

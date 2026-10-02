@@ -184,7 +184,7 @@ if args.device == 'cuda' and torch.cuda.is_available():
 else:
     @profile(stream=profiler_stream)
     def load():
-        return i_whisper.load_int_model(args.model+"_fixln", args.device)
+        return i_whisper.load_int_model(args.model, args.device)
     model = load()
 # Decoding options
 options = i_whisper.DecodingOptions(fp16=False, language="en")

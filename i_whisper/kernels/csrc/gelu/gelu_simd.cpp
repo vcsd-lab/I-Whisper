@@ -1,7 +1,6 @@
 #include "gelu.h"
 #include "../common/fixedpoint.h"
-
-#include <arm_neon.h>
+#include "../common/simd.h"
 
 #include <algorithm>
 #include <cstdint>
