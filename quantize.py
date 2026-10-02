@@ -628,11 +628,11 @@ if args.test:
         i_whisper.save_int_model(
             model,
             prefix="CKPT",
-            model_name="base",
+            model_name=args.model,
         )
 
         loaded_model = i_whisper.load_int_model(
-            "base",
+            args.model,
             device="cpu",
         )
 
