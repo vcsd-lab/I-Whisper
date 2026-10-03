@@ -120,7 +120,7 @@ class GELU_quantized(nn.Module):
         self.lut = nn.Parameter(F.sigmoid(torch.arange(self.lut_low, self.lut_high, self.lut_delta)).mul(2**self.lut_data_bit -1).round().to(torch.uint8), requires_grad=False)
         self.lut[0] = 0
         self.lut[-1] = 2**self.lut_data_bit -1
-        self.luti_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint32), requires_grad=False)
+        self.luti_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint8), requires_grad=False)
         self.luti_req_shiftmount = nn.Parameter(torch.zeros(channel_num, dtype=torch.int8), requires_grad=False)
         self.luto_req_multiplier = nn.Parameter(torch.ones(out_channel_num, dtype=torch.uint8), requires_grad=False)
         self.luto_req_shiftmount = nn.Parameter(torch.zeros(out_channel_num, dtype=torch.int8), requires_grad=False)
@@ -172,15 +172,21 @@ class GELU_quantized(nn.Module):
         
         # caluclate requantization parameters
         luti_req_alpha = self.de_smooth_vec / self.act_alpha / self.lut_delta
-        luti_req_multiplier, luti_req_shiftmount = torch.frexp(luti_req_alpha)
-        self.luti_req_multiplier.data = (luti_req_multiplier * 2.**31).round().to(torch.uint32)
-        self.luti_req_shiftmount.data = (-luti_req_shiftmount - 1).round().clamp(0,32).to(torch.int8)
+        luti_req_multiplier, luti_req_exponent = torch.frexp(luti_req_alpha)
+        self.luti_req_multiplier.data = (luti_req_multiplier * 2.**7).round().to(torch.uint8)
+        luti_req_shiftmount = (-luti_req_exponent + 7)
+        assert (luti_req_shiftmount >= 0).all(), "luti_req_shiftmount must be non-negative!"
+        assert (luti_req_shiftmount <= 32).all(), "luti_req_shiftmount must be <= 32!"
+        self.luti_req_shiftmount.data = luti_req_shiftmount.round().to(torch.int8)
 
         luto_req_alpha = out_alpha / self.act_alpha / 255.0
         #                out_act_alpha / (act_alpha * lut_out_alpha)
-        luto_req_multiplier, luto_req_shiftmount = torch.frexp(luto_req_alpha)
+        luto_req_multiplier, luto_req_exponent = torch.frexp(luto_req_alpha)
         self.luto_req_multiplier.data = (luto_req_multiplier * 2.**7).round().to(torch.uint8)
-        self.luto_req_shiftmount.data = (-luto_req_shiftmount+7).round().clamp(0,32).to(torch.int8)
+        luto_req_shiftmount = (-luto_req_exponent + 7)
+        assert (luto_req_shiftmount >= 0).all(), "luto_req_shiftmount must be non-negative!"
+        assert (luto_req_shiftmount <= 32).all(), "luto_req_shiftmount must be <= 32!"
+        self.luto_req_shiftmount.data = luto_req_shiftmount.round().to(torch.int8)
         
         self.out_alpha = out_alpha
         

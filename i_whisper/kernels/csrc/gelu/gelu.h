@@ -8,7 +8,7 @@ namespace iwhisper
 void gelu_scalar(
     const int8_t *input,
     const uint8_t *lut,
-    const uint32_t *luti_multiplier,
+    const uint8_t *luti_multiplier,
     const int8_t *luti_shift,
     const uint8_t *luto_multiplier,
     const int8_t *luto_shift,
@@ -21,7 +21,7 @@ void gelu_scalar(
 void gelu_simd(
     const int8_t *input,
     const uint8_t *lut,
-    const uint32_t *luti_multiplier,
+    const uint8_t *luti_multiplier,
     const int8_t *luti_shift,
     const uint8_t *luto_multiplier,
     const int8_t *luto_shift,
