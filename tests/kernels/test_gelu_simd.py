@@ -14,12 +14,19 @@ def _torch_golden(
     luto_multiplier,
     luto_shift,
 ):
-    # LUT-input requant:
-    # signed x * uint32 multiplier -> MULH
+    """
+    Frozen integer GeLU Torch golden.
+
+    LUT input:
+        normal multiply -> rounded Rshift -> +8 -> clamp [0, 15]
+
+    LUT output:
+        x * LUT -> normal multiply -> rounded Rshift
+        -> clamp [-127, 127]
+    """
     index = (
-        x.long()
-        .mul(luti_multiplier.long())
-        >> 32
+        x.int()
+        .mul(luti_multiplier.int())
     ).int()
 
     index = Rshift(
@@ -251,8 +258,8 @@ def test_gelu_simd_exhaustive_int8():
     lut = _default_lut()
 
     luti_multiplier = torch.tensor(
-        [0x68000000],
-        dtype=torch.uint32,
+        [104],
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -301,10 +308,10 @@ def test_gelu_simd_per_channel_random():
     lut = _default_lut()
 
     luti_multiplier = torch.randint(
-        0,
-        2**32,
+        64,
+        129,
         (channels,),
-        dtype=torch.uint32,
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.randint(
@@ -366,8 +373,8 @@ def test_gelu_simd_variable_shift_boundaries():
 
     luti_multiplier = torch.full(
         (channels,),
-        0xF1234567,
-        dtype=torch.uint32,
+        104,
+        dtype=torch.uint8,
     )
 
     luti_shift = (
@@ -409,12 +416,14 @@ def test_gelu_simd_variable_shift_boundaries():
 @pytest.mark.parametrize(
     "multiplier",
     [
+        0,
         1,
-        0x40000000,
-        0x7FFFFFFF,
-        0x80000000,
-        0xF1234567,
-        0xFFFFFFFF,
+        63,
+        64,
+        104,
+        127,
+        128,
+        255,
     ],
 )
 def test_gelu_simd_unsigned_mulh(
@@ -433,7 +442,7 @@ def test_gelu_simd_unsigned_mulh(
 
     luti_multiplier = torch.tensor(
         [multiplier],
-        dtype=torch.uint32,
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -486,8 +495,8 @@ def test_gelu_simd_lut_saturation():
     lut = _default_lut()
 
     luti_multiplier = torch.tensor(
-        [0xFFFFFFFF],
-        dtype=torch.uint32,
+        [104],
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -548,8 +557,8 @@ def test_gelu_simd_custom_lut():
     )
 
     luti_multiplier = torch.tensor(
-        [0x65000000],
-        dtype=torch.uint32,
+        [101],
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -599,8 +608,8 @@ def test_gelu_simd_encoder_scalar_broadcast():
     lut = _default_lut()
 
     luti_multiplier = torch.tensor(
-        [0x71000000],
-        dtype=torch.uint32,
+        [104],
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -650,10 +659,10 @@ def test_gelu_simd_mlp_per_channel():
     lut = _default_lut()
 
     luti_multiplier = torch.randint(
-        0,
-        2**32,
+        64,
+        129,
         (channels,),
-        dtype=torch.uint32,
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.randint(
@@ -674,6 +683,92 @@ def test_gelu_simd_mlp_per_channel():
         0,
         16,
         (channels,),
+        dtype=torch.int8,
+    )
+
+    _assert_all_equal(
+        x,
+        lut,
+        luti_multiplier,
+        luti_shift,
+        luto_multiplier,
+        luto_shift,
+    )
+
+
+def test_gelu_simd_luti_uint8_widening():
+    """
+    Verify uint8 LUT-input multipliers are widened without
+    signed interpretation.
+
+    Especially important for values >= 128:
+        uint8 128..255
+    must remain positive after SIMD widening.
+
+    Exactly 16 channels forces one full SIMD block.
+    """
+
+    channels = 16
+
+    # Two SIMD rows:
+    # one positive, one negative.
+    x = torch.stack(
+        [
+            torch.full(
+                (channels,),
+                127,
+                dtype=torch.int8,
+            ),
+            torch.full(
+                (channels,),
+                -127,
+                dtype=torch.int8,
+            ),
+        ]
+    )
+
+    lut = _default_lut()
+
+    # Deliberately cross the int8 signed boundary.
+    luti_multiplier = torch.tensor(
+        [
+            0,
+            1,
+            63,
+            64,
+            104,
+            127,
+            128,
+            129,
+            160,
+            191,
+            192,
+            200,
+            224,
+            240,
+            254,
+            255,
+        ],
+        dtype=torch.uint8,
+    )
+
+    # Keep the resulting LUT indices mostly away from
+    # immediate saturation, so multiplier errors remain visible.
+    luti_shift = torch.full(
+        (channels,),
+        12,
+        dtype=torch.int8,
+    )
+
+    # Keep LUT-output requant simple so differences in
+    # LUT selection remain observable.
+    luto_multiplier = torch.tensor(
+        [1],
+        dtype=torch.uint8,
+    )
+
+    luto_shift = torch.tensor(
+        [8],
         dtype=torch.int8,
     )
 

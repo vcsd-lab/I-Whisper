@@ -95,7 +95,7 @@ class GELU_int(nn.Module):
 
         '''Quantization Parameters initialization'''
         self.lut = nn.Parameter(torch.arange(0, self.lut_upper+1).to(torch.uint8), requires_grad=False)
-        self.luti_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint32), requires_grad=False)
+        self.luti_req_multiplier = nn.Parameter(torch.ones(channel_num, dtype=torch.uint8), requires_grad=False)
         self.luti_req_shiftmount = nn.Parameter(torch.zeros(channel_num, dtype=torch.int8), requires_grad=False)
         self.luto_req_multiplier = nn.Parameter(torch.ones(out_channel_num, dtype=torch.uint8), requires_grad=False)
         self.luto_req_shiftmount = nn.Parameter(torch.zeros(out_channel_num, dtype=torch.int8), requires_grad=False)
@@ -106,8 +106,7 @@ class GELU_int(nn.Module):
         assert x.dtype == torch.int8, "Input tensor must be int8 in integer inference mode!"
         # Integer Inference Mode
 
-        index = (x.long().mul(self.luti_req_multiplier.long())>>32).int()
-        index = Rshift(index, self.luti_req_shiftmount)
+        index = Rshift(x.int().mul(self.luti_req_multiplier.int()), self.luti_req_shiftmount)
         index = (index+self.lut_zero).clamp(0, self.lut_upper).to(dtype=torch.long, device=x.device)
         index = self.lut[index]
 

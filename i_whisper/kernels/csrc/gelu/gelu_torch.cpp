@@ -27,7 +27,7 @@ torch::Tensor gelu_impl(
         lut,
         "lut");
 
-    iwhisper::checktensor::CHECK_CPU_UINT32(
+    iwhisper::checktensor::CHECK_CPU_UINT8(
         luti_multiplier,
         "luti_multiplier");
 
@@ -120,7 +120,7 @@ torch::Tensor gelu_impl(
         iwhisper::gelu_scalar(
             input.data_ptr<int8_t>(),
             lut.data_ptr<uint8_t>(),
-            luti_multiplier.data_ptr<uint32_t>(),
+            luti_multiplier.data_ptr<uint8_t>(),
             luti_shift.data_ptr<int8_t>(),
             luto_multiplier.data_ptr<uint8_t>(),
             luto_shift.data_ptr<int8_t>(),
@@ -135,7 +135,7 @@ torch::Tensor gelu_impl(
         iwhisper::gelu_simd(
             input.data_ptr<int8_t>(),
             lut.data_ptr<uint8_t>(),
-            luti_multiplier.data_ptr<uint32_t>(),
+            luti_multiplier.data_ptr<uint8_t>(),
             luti_shift.data_ptr<int8_t>(),
             luto_multiplier.data_ptr<uint8_t>(),
             luto_shift.data_ptr<int8_t>(),

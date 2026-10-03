@@ -10,7 +10,7 @@ namespace iwhisper
 void gelu_scalar(
     const int8_t *input,
     const uint8_t *lut,
-    const uint32_t *luti_multiplier,
+    const uint8_t *luti_multiplier,
     const int8_t *luti_shift,
     const uint8_t *luto_multiplier,
     const int8_t *luto_shift,
@@ -43,20 +43,20 @@ void gelu_scalar(
 
 
         // ====================================================
-        // LUT input:
+        // LUT input requant:
         //
         // Torch:
         //
         // index =
-        //   (x.long() * luti_multiplier.long()) >> 32
+        //   x.int() * luti_multiplier.int()
         //
-        // This is truncating MULH.
+        // luti multiplier is Q7 uint8.
+        // Normal INT32 multiply, NOT MULH.
         // ====================================================
 
         int32_t index =
-            iwhisper::fixedpoint::mulh(
-                static_cast<int32_t>(
-                    input[i]),
+            static_cast<int32_t>(input[i])
+            * static_cast<int32_t>(
                 luti_multiplier[luti_idx]);
 
 

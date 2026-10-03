@@ -17,7 +17,7 @@ def _torch_golden(
     Frozen integer GeLU Torch golden.
 
     LUT input:
-        MULH -> rounded Rshift -> +8 -> clamp [0, 15]
+        normal multiply -> rounded Rshift -> +8 -> clamp [0, 15]
 
     LUT output:
         x * LUT -> normal multiply -> rounded Rshift
@@ -25,9 +25,7 @@ def _torch_golden(
     """
 
     index = (
-        x.long()
-        .mul(luti_multiplier.long())
-        >> 32
+        x.int().mul(luti_multiplier.int())
     ).int()
 
     index = Rshift(
@@ -180,8 +178,8 @@ def test_gelu_scalar_exhaustive_int8():
     lut = _default_lut()
 
     luti_multiplier = torch.tensor(
-        [0x68000000],
-        dtype=torch.uint32,
+        [104],
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -218,6 +216,7 @@ def test_gelu_scalar_exhaustive_int8():
         7,
         15,
         31,
+        32
     ],
 )
 def test_gelu_scalar_luti_shift(
@@ -237,8 +236,8 @@ def test_gelu_scalar_luti_shift(
     lut = _default_lut()
 
     luti_multiplier = torch.tensor(
-        [0x70000000],
-        dtype=torch.uint32,
+        [104],
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -275,6 +274,7 @@ def test_gelu_scalar_luti_shift(
         7,
         15,
         23,
+        32
     ],
 )
 def test_gelu_scalar_luto_shift(
@@ -294,8 +294,8 @@ def test_gelu_scalar_luto_shift(
     lut = _default_lut()
 
     luti_multiplier = torch.tensor(
-        [0x60000000],
-        dtype=torch.uint32,
+        [104],
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -326,22 +326,23 @@ def test_gelu_scalar_luto_shift(
 @pytest.mark.parametrize(
     "multiplier",
     [
+        0,
         1,
-        0x40000000,
-        0x7FFFFFFF,
-        0x80000000,
-        0xF1234567,
-        0xFFFFFFFF,
+        63,
+        64,
+        104,
+        127,
+        128,
+        255,
     ],
 )
-def test_gelu_scalar_luti_unsigned_mulh(
+def test_gelu_scalar_luti_unsigned_mul(
     multiplier,
 ):
     """
-    luti multiplier is uint32.
+    luti multiplier is uint8
+    and can be zero, one, or any value up to 255.
 
-    Values above INT32_MAX are important because an
-    accidental signed interpretation would be incorrect.
     """
 
     x = torch.arange(
@@ -354,7 +355,7 @@ def test_gelu_scalar_luti_unsigned_mulh(
 
     luti_multiplier = torch.tensor(
         [multiplier],
-        dtype=torch.uint32,
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -403,10 +404,10 @@ def test_gelu_scalar_per_channel():
     lut = _default_lut()
 
     luti_multiplier = torch.randint(
-        1,
-        2**32,
+        64,
+        129,
         (channels,),
-        dtype=torch.uint32,
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.randint(
@@ -458,8 +459,8 @@ def test_gelu_scalar_scalar_broadcast():
     lut = _default_lut()
 
     luti_multiplier = torch.tensor(
-        [0x71000000],
-        dtype=torch.uint32,
+        [104],
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -512,8 +513,8 @@ def test_gelu_scalar_lut_boundaries():
     lut = _default_lut()
 
     luti_multiplier = torch.tensor(
-        [0xFFFFFFFF],
-        dtype=torch.uint32,
+        [127],
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
@@ -576,8 +577,8 @@ def test_gelu_scalar_custom_lut():
     )
 
     luti_multiplier = torch.tensor(
-        [0x65000000],
-        dtype=torch.uint32,
+        [104],
+        dtype=torch.uint8,
     )
 
     luti_shift = torch.tensor(
