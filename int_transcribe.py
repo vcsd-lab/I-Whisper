@@ -166,14 +166,8 @@ if torch.cuda.is_available():
 
 
 '''Load integer preprocessing parameters'''
-CKPT_PATH = os.path.join('CKPT', 'consolidated.int.'+args.model+'.pth')
 profiler_stream = LoggerStream(logger, logging.INFO)
-# @profile(stream=profiler_stream)
-# def load_preproc():
-#     PreProcessor = i_whisper.audio.PreProcessor(device="cpu", param_init=False)
-#     PreProcessor.load_param()
-#     return PreProcessor
-# PreProcessor = load_preproc()
+
 
 '''Load integer whisper model'''
 if args.device == 'cuda' and torch.cuda.is_available():
