@@ -18,3 +18,7 @@ CKPT
 build
 
 *.so
+
+ACTIVATION_DUMP/
+analysis/ACTIVATION_DUMP/
+*.npy
