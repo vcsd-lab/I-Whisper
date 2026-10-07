@@ -1,0 +1,7 @@
+sequence_length,head_dim,per_step_direct_normalized_values,per_step_reform_normalized_values,per_step_direct_over_reform,cumulative_direct_normalized_values_per_head,cumulative_reform_normalized_values_per_head,cumulative_direct_over_reform,cumulative_direct_values_all_heads_layers,cumulative_reform_values_all_heads_layers,cumulative_values_saved_all_heads_layers,direct_normalized_p_materialization_bytes
+16,64,16,64,0.25,136,1024,0.1328125,6528,49152,-42624,6528
+32,64,32,64,0.5,528,2048,0.2578125,25344,98304,-72960,25344
+64,64,64,64,1.0,2080,4096,0.5078125,99840,196608,-96768,99840
+128,64,128,64,2.0,8256,8192,1.0078125,396288,393216,3072,396288
+256,64,256,64,4.0,32896,16384,2.0078125,1579008,786432,792576,1579008
+448,64,448,64,7.0,100576,28672,3.5078125,4827648,1376256,3451392,4827648
