@@ -20,5 +20,6 @@ build
 *.so
 
 ACTIVATION_DUMP/
+ATTENTION_DUMP/
 analysis/ACTIVATION_DUMP/
 *.npy
