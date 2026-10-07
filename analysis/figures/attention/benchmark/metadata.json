@@ -1,0 +1,31 @@
+{
+  "benchmark": "post_qk_attention",
+  "model": "base",
+  "machine": "aarch64",
+  "platform": "Linux-6.18.34+rpt-rpi-2712-aarch64-with-glibc2.41",
+  "python": "3.13.5",
+  "torch": "2.14.0+cpu",
+  "contexts": [
+    16,
+    32,
+    64,
+    128,
+    256,
+    448
+  ],
+  "decoder_layers": 6,
+  "heads": 8,
+  "head_dim": 64,
+  "torch_num_threads": 1,
+  "cpu_affinity": [
+    3
+  ],
+  "warmup": 20,
+  "repeats": 25,
+  "inner": 50,
+  "naive_path": "INT16 QK -> FP32 dequant -> causal mask -> F.softmax -> Q1.7 uint8 -> Batch_Head_u8s8s32_GeMM -> >>7 -> output requant -> INT8",
+  "iwhisper_path": "INT16 QK + row max -> shift_exp_simd -> uint8 E + sum(E) -> pv_norm_requant_simd -> INT8",
+  "scope_note": "Timing starts after QK score generation. It excludes Q/K/V projections and QK GEMM. I-Whisper row max is assumed available from the production fused QK-requant-rowmax kernel.",
+  "baseline_note": "The direct Softmax baseline uses PyTorch FP32 Softmax and the repository's CPU Batch_Head_u8s8s32_GeMM helper. Therefore measured speedup reflects both the attention reform and the optimized fused SIMD implementation; it must not be described as reform-only speedup.",
+  "input_note": "Dense kernels are benchmarked with deterministic synthetic QK/V values using actual model layer quantization parameters. Tensor shapes and dtypes match one autoregressive decoder self-attention step."
+}
