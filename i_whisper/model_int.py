@@ -248,145 +248,23 @@ class LayerNorm_int(nn.LayerNorm):
                 self.out_req_shiftmount,
             )
 
-            if not torch.equal(out, ref):
-                row = 8
-                col = 2
-
-                # ----- Torch stats -----
-                norm_number = self.normalized_shape[0]
-
-                norm_multiplier = {
-                    1280: [True, False, False],
-                    1024: [False, False, False],
-                    768:  [False, True, True],
-                    512:  [False, False, False],
-                    384:  [False, True, True],
-                }
-
-                norm_shiftmount = {
-                    1280: 11,
-                    1024: 10,
-                    768: 10,
-                    512: 9,
-                    384: 9,
-                }
-
-                def mul_by_shift_multiplier(v, multiplier):
-                    o = v.clone()
-                    if multiplier[0]:
-                        o += v >> 1
-                    if multiplier[1]:
-                        o += v >> 2
-                    if multiplier[2]:
-                        o += v >> 3
-                    return o
-
-                norm_mul = norm_multiplier[norm_number]
-                norm_shift = norm_shiftmount[norm_number]
-
-                mean_ref = torch.sum(
-                    x.int(),
-                    dim=-1,
-                    keepdim=True,
-                ).int()
-
-                mean_ref = (
-                    mul_by_shift_multiplier(mean_ref, norm_mul)
-                    >> norm_shift
-                )
-
-                sub_square = (x - mean_ref).abs() ** 2
-
-                max_bit_length = int_bit_length(
-                    sub_square.max(
-                        dim=-1,
-                        keepdim=True,
-                    ).values
-                )
-
-                renorm_ref = (
-                    max_bit_length - 16
-                ).clamp(min=0)
-
-                renorm_ref = (
-                    renorm_ref + 1
-                ) & ~1
-
-                var_ref = torch.sum(
-                    Rshift(
-                        sub_square,
-                        renorm_ref,
-                    ),
-                    dim=-1,
-                    keepdim=True,
-                ).int()
-
-                var_ref = (
-                    mul_by_shift_multiplier(
-                        var_ref,
-                        norm_mul,
-                    )
-                    >> norm_shift
-                ).int()
-
-                invstd_ref = Fast_Inverse_Square_Root(
-                    var_ref,
-                    12,
-                    2,
-                )
-
-                # ----- C++ debug kernels -----
-                mean_cpp, var_cpp, renorm_cpp = (
-                    _C.layernorm32_stats_scalar(
-                        x.contiguous()
-                    )
-                )
-
-                flat_row = row  # shape = [1,1500,512]
-
-                invstd_cpp = _C.layernorm32_rsqrt_scalar(
-                    var_cpp
-                )
-
-                print("==== LN DEBUG ====")
-                print(
-                    "mean:",
-                    mean_ref[0, row, 0].item(),
-                    mean_cpp[flat_row].item(),
-                )
-                print(
-                    "renorm:",
-                    renorm_ref[0, row, 0].item(),
-                    renorm_cpp[flat_row].item(),
-                )
-                print(
-                    "var:",
-                    var_ref[0, row, 0].item(),
-                    var_cpp[flat_row].item(),
-                )
-                print(
-                    "invstd:",
-                    invstd_ref[0, row, 0].item(),
-                    invstd_cpp[flat_row].item(),
-                )
-
-                print(
-                    "input:",
-                    x[0, row, col].item(),
-                )
-                print(
-                    "weight:",
-                    self.weight[col].item(),
-                )
-                print(
-                    "bias:",
-                    self.bias[col].item()
-                    if self.bias is not None else None,
-                )
-
-                raise RuntimeError("LayerNorm32 mismatch")
+            assert torch.equal(out, ref), "LayerNorm32 mismatch"
         elif self.backend == "torch64":
             out = self._forward_torch64(x)
+        elif self.backend == "check64":
+            ref = self._forward_torch64(x)
+
+            out = _C.layernorm64_scalar(
+                x,
+                self.weight,
+                self.bias,
+                self.ln_req_multiplier,
+                self.ln_req_shiftmount,
+                self.out_req_multiplier,
+                self.out_req_shiftmount,
+            )
+
+            assert torch.equal(out, ref), "LayerNorm64 mismatch"
         else:
             raise NotImplementedError(f"Backend {self.backend} is not implemented.")
         
@@ -1764,6 +1642,7 @@ def set_layernorm_backend(
         "simd",
         "check",
         "torch64",
+        "check64",
     ]
 
     log = (
