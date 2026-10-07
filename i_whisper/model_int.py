@@ -11,7 +11,7 @@ from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import Tensor, nn
+from torch import Tensor, add, nn
 from bitsandbytes.functional import int8_linear_matmul
 
 from .decoding import decode as decode_function
@@ -385,11 +385,122 @@ class LayerNorm_int(nn.LayerNorm):
                 )
 
                 raise RuntimeError("LayerNorm32 mismatch")
+        elif self.backend == "torch64":
+            out = self._forward_torch64(x)
         else:
             raise NotImplementedError(f"Backend {self.backend} is not implemented.")
         
         return out, res
     
+    def _forward_torch64(self, x: Tensor) -> Tensor:
+        '''LayerNorm with Quantize function
+        '''
+        norm_number = self.normalized_shape[0]
+        # replace norm division to multiplication + right shift
+        # 1/1280 = (1/5) * 2^-8 = 1.6 * 2^-11 approx 1.5 * 2^-11
+        # 1/1024 = 1 * 2^-10
+        # 1/768 = (1/3) * 2^-8 = 1.3333 * 2^-10 approx 1.375 * 2^-10
+        # 1/512 = 1 * 2^-9
+        # 1/384 = (1/3) * 2^-7 = 1.3333 * 2^-9 approx 1.375 * 2^-9
+        norm_multiplier = {
+            1280:[True,False,False],  # 'b1.100,  d'1.5
+            1024:[False,False,False], # 'b1.000,  d'1.0
+            768: [False,True,True],   # 'b1.011,  d'1.375
+            512: [False,False,False], # 'b1.000,  d'1.0
+            384: [False,True,True]    # 'b1.011,  d'1.375
+        }
+        def mul_by_shift_multiplier(x, multiplier):
+            out = x.clone()
+            if multiplier[0]:
+                out += (x >> 1) # += multiply by 0.5
+            if multiplier[1]:
+                out += (x >> 2) # += multiply by 0.25
+            if multiplier[2]:
+                out += (x >> 3) # += multiply by 0.125
+            return out
+
+        norm_shiftmount = {
+            1280:11,
+            1024:10,
+            768:10,
+            512:9,
+            384:9
+        }
+        
+        norm_mul = norm_multiplier[norm_number]
+        norm_shmnt = norm_shiftmount[norm_number]
+        
+        mean = torch.sum(
+            x.int(),
+            dim=-1,
+            keepdim=True,
+        ).int()
+
+        mean = (
+            mul_by_shift_multiplier(
+                mean,
+                norm_mul,
+            )
+            >> norm_shmnt
+        )
+
+        centered64 = (
+            x.to(torch.int64)
+            - mean.to(torch.int64)
+        )
+
+        sub_square64 = (
+            centered64 * centered64
+        )
+
+        var64 = torch.sum(
+            sub_square64,
+            dim=-1,
+            keepdim=True,
+        )
+
+        var64 = (
+            mul_by_shift_multiplier(
+                var64,
+                norm_mul,
+            )
+            >> norm_shmnt
+        )
+
+        assert torch.all(var64 >= 0)
+        assert torch.all(
+            var64 <= torch.iinfo(torch.int32).max
+        )
+
+        var = var64.to(torch.int32)
+        
+        additional_offset = 2
+        rsqrt_offset = self.offset + additional_offset
+
+        invstd = Fast_Inverse_Square_Root(
+            var,
+            rsqrt_offset,
+            2,
+        )
+        x = ((x - mean) * invstd)
+
+
+        '''Fixedpoint Multiplication'''
+        x = Rshift( (x * self.ln_req_multiplier), (self.ln_req_shiftmount+additional_offset) )
+        x = x.clamp(min=-self.act_range, max=self.act_range)
+        
+
+        if self.bias is None:
+            x = x.mul(self.weight.int())
+        else:
+            x = (x.mul(self.weight.int()) + self.bias)
+
+        '''Re-Quantize final output'''
+        x = (x.long().mul(self.out_req_multiplier.long())>>32).int()
+        x = Rshift(x, self.out_req_shiftmount)
+        x = x.clamp(min=-self.norm_out_range, max=self.norm_out_range).to(torch.int8)
+
+        return x
 
 
     def _forward_torch(self, x: Tensor) -> Tensor:
@@ -1652,6 +1763,7 @@ def set_layernorm_backend(
         "scalar",
         "simd",
         "check",
+        "torch64",
     ]
 
     log = (
