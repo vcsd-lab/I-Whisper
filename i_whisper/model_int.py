@@ -251,6 +251,26 @@ class LayerNorm_int(nn.LayerNorm):
             assert torch.equal(out, ref), "LayerNorm32 mismatch"
         elif self.backend == "torch64":
             out = self._forward_torch64(x)
+        elif self.backend == "scalar64":
+            out = _C.layernorm64_scalar(
+                x,
+                self.weight,
+                self.bias,
+                self.ln_req_multiplier,
+                self.ln_req_shiftmount,
+                self.out_req_multiplier,
+                self.out_req_shiftmount,
+            )
+        elif self.backend == "simd64":
+            out = _C.layernorm64_simd(
+                x,
+                self.weight,
+                self.bias,
+                self.ln_req_multiplier,
+                self.ln_req_shiftmount,
+                self.out_req_multiplier,
+                self.out_req_shiftmount,
+            )
         elif self.backend == "check64":
             ref = self._forward_torch64(x)
 
@@ -1642,6 +1662,8 @@ def set_layernorm_backend(
         "simd",
         "check",
         "torch64",
+        "scalar64",
+        "simd64",
         "check64",
     ]
 
