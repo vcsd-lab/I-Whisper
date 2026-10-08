@@ -464,3 +464,170 @@ torch::Tensor layernorm64_scalar_torch(
 
     return output;
 }
+
+std::tuple<
+    torch::Tensor,
+    torch::Tensor>
+layernorm64_stats_simd_torch(
+    const torch::Tensor &input)
+{
+    iwhisper::checktensor::CHECK_CPU_INT16(
+        input,
+        "input");
+
+    TORCH_CHECK(
+        input.dim() >= 1,
+        "input must have at least one dimension");
+
+    TORCH_CHECK(
+        input.is_contiguous(),
+        "input must be contiguous");
+
+    const int64_t hidden_size =
+        input.size(-1);
+
+    TORCH_CHECK(
+        hidden_size == 384 ||
+            hidden_size == 512 ||
+            hidden_size == 768 ||
+            hidden_size == 1024 ||
+            hidden_size == 1280,
+        "unsupported LayerNorm hidden size: ",
+        hidden_size);
+
+    const int64_t rows =
+        input.numel() /
+        hidden_size;
+
+    auto mean =
+        torch::empty(
+            {rows},
+            input.options().dtype(
+                torch::kInt32));
+
+    auto variance =
+        torch::empty(
+            {rows},
+            input.options().dtype(
+                torch::kInt64));
+
+    iwhisper::layernorm64_stats_simd(
+        input.data_ptr<int16_t>(),
+        mean.data_ptr<int32_t>(),
+        variance.data_ptr<int64_t>(),
+        rows,
+        hidden_size);
+
+    return {
+        mean,
+        variance};
+}
+
+torch::Tensor layernorm64_simd_torch(
+    const torch::Tensor &input,
+    const torch::Tensor &weight,
+    const c10::optional<torch::Tensor> &bias,
+    const torch::Tensor &ln_multiplier,
+    const torch::Tensor &ln_shift,
+    const torch::Tensor &out_multiplier,
+    const torch::Tensor &out_shift)
+{
+    iwhisper::checktensor::CHECK_CPU_INT16(
+        input,
+        "input");
+    iwhisper::checktensor::CHECK_CPU_INT8(
+        weight,
+        "weight");
+    iwhisper::checktensor::CHECK_CPU_UINT8(
+        ln_multiplier,
+        "ln_multiplier");
+    iwhisper::checktensor::CHECK_CPU_INT8(
+        ln_shift,
+        "ln_shift");
+    iwhisper::checktensor::CHECK_CPU_UINT32(
+        out_multiplier,
+        "out_multiplier");
+    iwhisper::checktensor::CHECK_CPU_INT8(
+        out_shift,
+        "out_shift");
+
+    TORCH_CHECK(
+        input.dim() >= 1,
+        "input must have at least one dimension");
+
+    TORCH_CHECK(
+        input.is_contiguous(),
+        "input must be contiguous");
+
+    TORCH_CHECK(
+        weight.dim() == 1,
+        "weight must be a 1D tensor");
+
+    const int64_t hidden_size =
+        input.size(-1);
+
+    TORCH_CHECK(
+        hidden_size == 384 ||
+            hidden_size == 512 ||
+            hidden_size == 768 ||
+            hidden_size == 1024 ||
+            hidden_size == 1280,
+        "unsupported LayerNorm hidden size: ",
+        hidden_size);
+
+    TORCH_CHECK(
+        weight.numel() == hidden_size,
+        "weight.numel() must equal input.size(-1)");
+
+    const bool has_bias =
+        bias.has_value();
+
+    if (has_bias)
+    {
+        iwhisper::checktensor::CHECK_CPU_INT32(
+            bias.value(),
+            "bias");
+
+        TORCH_CHECK(
+            bias.value().dim() == 1,
+            "bias must be a 1D tensor");
+
+        TORCH_CHECK(
+            bias.value().numel() == hidden_size,
+            "bias.numel() must equal input.size(-1)");
+    }
+
+    const int64_t rows =
+        input.numel() /
+        hidden_size;
+
+    auto output =
+        torch::empty_like(
+            input,
+            torch::kInt8);
+
+    constexpr uint32_t
+        kLayerNorm64RsqrtOffset = 15;
+
+    constexpr int32_t
+        kLayerNorm64AdditionalOffset = 2;
+
+    iwhisper::layernorm64_simd(
+        input.data_ptr<int16_t>(),
+        weight.data_ptr<int8_t>(),
+        has_bias
+            ? bias.value().data_ptr<int32_t>()
+            : nullptr,
+        ln_multiplier.data_ptr<uint8_t>()[0],
+        ln_shift.data_ptr<int8_t>()[0],
+        out_multiplier.data_ptr<uint32_t>()[0],
+        out_shift.data_ptr<int8_t>()[0],
+        kLayerNorm64RsqrtOffset,
+        kLayerNorm64AdditionalOffset,
+        output.data_ptr<int8_t>(),
+        rows,
+        hidden_size,
+        has_bias);
+
+    return output;
+}

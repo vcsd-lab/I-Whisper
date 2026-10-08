@@ -254,7 +254,7 @@ class LayerNorm_int(nn.LayerNorm):
         elif self.backend == "check64":
             ref = self._forward_torch64(x)
 
-            out = _C.layernorm64_scalar(
+            out = _C.layernorm64_simd(
                 x,
                 self.weight,
                 self.bias,

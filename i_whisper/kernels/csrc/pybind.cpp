@@ -155,6 +155,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         "I-Whisper LayerNorm64 stats scalar kernel",
         pybind11::arg("input"));
     m.def(
+        "layernorm64_stats_simd",
+        &layernorm64_stats_simd_torch,
+        "I-Whisper LayerNorm64 stats SIMD kernel",
+        pybind11::arg("input"));
+    m.def(
+        "layernorm64_simd",
+        &layernorm64_simd_torch,
+        "I-Whisper complete LayerNorm64 SIMD kernel",
+        pybind11::arg("input"),
+        pybind11::arg("weight"),
+        pybind11::arg("bias"),
+        pybind11::arg("ln_multiplier"),
+        pybind11::arg("ln_shift"),
+        pybind11::arg("out_multiplier"),
+        pybind11::arg("out_shift"));
+    m.def(
         "layernorm64_scalar",
         &layernorm64_scalar_torch,
         "I-Whisper complete LayerNorm64 scalar kernel",

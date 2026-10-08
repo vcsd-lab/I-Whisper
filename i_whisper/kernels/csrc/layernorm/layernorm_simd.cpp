@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <limits>
 
 namespace iwhisper
 {
@@ -52,6 +53,40 @@ namespace iwhisper
             default:
                 throw std::invalid_argument(
                     "unsupported LayerNorm hidden size: " + std::to_string(hidden_size));
+            }
+        }
+
+        static inline int64_t apply_norm_reduce64(
+            int64_t x,
+            int64_t hidden_size)
+        {
+            switch (hidden_size)
+            {
+            case 384:
+                return (
+                           x + (x >> 2) + (x >> 3)) >>
+                       9;
+
+            case 512:
+                return x >> 9;
+
+            case 768:
+                return (
+                           x + (x >> 2) + (x >> 3)) >>
+                       10;
+
+            case 1024:
+                return x >> 10;
+
+            case 1280:
+                return (
+                           x + (x >> 1)) >>
+                       11;
+
+            default:
+                throw std::invalid_argument(
+                    "unsupported LayerNorm hidden size: " +
+                    std::to_string(hidden_size));
             }
         }
 
@@ -495,6 +530,194 @@ namespace iwhisper
                 renorm_shift};
         }
 
+        // ============================================================
+        // Row stats for 64-bit variance
+        // ============================================================
+        struct LayerNorm64RowStats
+        {
+            int32_t mean;
+            int64_t variance;
+        };
+
+        static inline LayerNorm64RowStats
+        compute_row_stats64_simd(
+            const int16_t *row_ptr,
+            int64_t hidden_size)
+        {
+            // --------------------------------------------------------
+            // Pass 1:
+            // Mean.
+            //
+            // Intentionally identical to LayerNorm32 SIMD.
+            // --------------------------------------------------------
+
+            int32x4_t sum_lo =
+                vdupq_n_s32(0);
+
+            int32x4_t sum_hi =
+                vdupq_n_s32(0);
+
+            int64_t col = 0;
+
+            for (;
+                 col + 8 <= hidden_size;
+                 col += 8)
+            {
+                const int16x8_t x16 =
+                    vld1q_s16(
+                        row_ptr + col);
+
+                const int32x4_t x_lo =
+                    vmovl_s16(
+                        vget_low_s16(x16));
+
+                const int32x4_t x_hi =
+                    vmovl_s16(
+                        vget_high_s16(x16));
+
+                sum_lo =
+                    vaddq_s32(
+                        sum_lo,
+                        x_lo);
+
+                sum_hi =
+                    vaddq_s32(
+                        sum_hi,
+                        x_hi);
+            }
+
+            int32_t row_sum =
+                vaddvq_s32(sum_lo) + vaddvq_s32(sum_hi);
+
+            for (;
+                 col < hidden_size;
+                 ++col)
+            {
+                row_sum +=
+                    static_cast<int32_t>(
+                        row_ptr[col]);
+            }
+
+            const int32_t row_mean =
+                apply_norm_reduce(
+                    row_sum,
+                    hidden_size);
+
+            // --------------------------------------------------------
+            // Pass 2:
+            // Full INT64 centered-square accumulation.
+            //
+            // 8 INT16 values
+            //   -> 2 x INT32x4 centered vectors
+            //   -> 4 x INT64x2 accumulators
+            //
+            // No max-square pass.
+            // No pre-shift.
+            // --------------------------------------------------------
+
+            const int32x4_t mean_vec =
+                vdupq_n_s32(
+                    row_mean);
+
+            int64x2_t var0 =
+                vdupq_n_s64(0);
+
+            int64x2_t var1 =
+                vdupq_n_s64(0);
+
+            int64x2_t var2 =
+                vdupq_n_s64(0);
+
+            int64x2_t var3 =
+                vdupq_n_s64(0);
+
+            col = 0;
+
+            for (;
+                 col + 8 <= hidden_size;
+                 col += 8)
+            {
+                const int16x8_t x16 =
+                    vld1q_s16(
+                        row_ptr + col);
+
+                int32x4_t x_lo =
+                    vmovl_s16(
+                        vget_low_s16(x16));
+
+                int32x4_t x_hi =
+                    vmovl_s16(
+                        vget_high_s16(x16));
+
+                x_lo =
+                    vsubq_s32(
+                        x_lo,
+                        mean_vec);
+
+                x_hi =
+                    vsubq_s32(
+                        x_hi,
+                        mean_vec);
+
+                // Each vmull/vmlal performs:
+                //
+                // INT32 x INT32 -> INT64
+                //
+                // so the square is never first truncated to INT32.
+
+                var0 =
+                    vmlal_s32(
+                        var0,
+                        vget_low_s32(x_lo),
+                        vget_low_s32(x_lo));
+
+                var1 =
+                    vmlal_s32(
+                        var1,
+                        vget_high_s32(x_lo),
+                        vget_high_s32(x_lo));
+
+                var2 =
+                    vmlal_s32(
+                        var2,
+                        vget_low_s32(x_hi),
+                        vget_low_s32(x_hi));
+
+                var3 =
+                    vmlal_s32(
+                        var3,
+                        vget_high_s32(x_hi),
+                        vget_high_s32(x_hi));
+            }
+
+            int64_t var_sum =
+                vaddvq_s64(var0) + vaddvq_s64(var1) + vaddvq_s64(var2) + vaddvq_s64(var3);
+
+            // Current supported hidden sizes are multiples of 8,
+            // but retain a scalar tail for completeness.
+            for (;
+                 col < hidden_size;
+                 ++col)
+            {
+                const int64_t centered =
+                    static_cast<int64_t>(
+                        row_ptr[col]) -
+                    static_cast<int64_t>(
+                        row_mean);
+
+                var_sum +=
+                    centered * centered;
+            }
+
+            const int64_t variance =
+                apply_norm_reduce64(
+                    var_sum,
+                    hidden_size);
+
+            return {
+                row_mean,
+                variance};
+        }
     } // namespace
 
     // ============================================================
@@ -529,6 +752,33 @@ namespace iwhisper
 
             renorm_shift[row] =
                 stats.renorm_shift;
+        }
+    }
+
+    void layernorm64_stats_simd(
+        const int16_t *input,
+        int32_t *mean,
+        int64_t *variance,
+        int64_t rows,
+        int64_t hidden_size)
+    {
+        for (int64_t row = 0;
+             row < rows;
+             ++row)
+        {
+            const int16_t *row_ptr =
+                input + row * hidden_size;
+
+            const LayerNorm64RowStats stats =
+                compute_row_stats64_simd(
+                    row_ptr,
+                    hidden_size);
+
+            mean[row] =
+                stats.mean;
+
+            variance[row] =
+                stats.variance;
         }
     }
 
@@ -836,6 +1086,365 @@ namespace iwhisper
             //
             // Current supported hidden sizes are all multiples of 8,
             // so this should normally never execute.
+            // ----------------------------------------------------
+
+            for (;
+                 col < hidden_size;
+                 ++col)
+            {
+                int32_t x =
+                    static_cast<int32_t>(
+                        row_ptr[col]) -
+                    stats.mean;
+
+                x =
+                    wrap_mul_s32(
+                        x,
+                        invstd);
+
+                x =
+                    wrap_mul_s32(
+                        x,
+                        static_cast<int32_t>(
+                            ln_multiplier));
+
+                x =
+                    iwhisper::fixedpoint::rounding_rshift(
+                        x,
+                        norm_shift);
+
+                x =
+                    std::clamp(
+                        x,
+                        kNormMin,
+                        kNormMax);
+
+                x =
+                    wrap_mul_s32(
+                        x,
+                        static_cast<int32_t>(
+                            weight[col]));
+
+                if (has_bias)
+                {
+                    x =
+                        wrap_add_s32(
+                            x,
+                            bias[col]);
+                }
+
+                x =
+                    mulhi_s32_u32_scalar(
+                        x,
+                        out_multiplier);
+
+                x =
+                    iwhisper::fixedpoint::rounding_rshift(
+                        x,
+                        final_shift);
+
+                x =
+                    std::clamp(
+                        x,
+                        kOutMin,
+                        kOutMax);
+
+                out_ptr[col] =
+                    static_cast<int8_t>(x);
+            }
+        }
+    }
+
+    void layernorm64_simd(
+        const int16_t *input,
+        const int8_t *weight,
+        const int32_t *bias,
+        uint8_t ln_multiplier,
+        int8_t ln_shift,
+        uint32_t out_multiplier,
+        int8_t out_shift,
+        uint32_t rsqrt_offset,
+        int32_t additional_offset,
+        int8_t *output,
+        int64_t rows,
+        int64_t hidden_size,
+        bool has_bias)
+    {
+        const int32x4_t norm_min =
+            vdupq_n_s32(
+                kNormMin);
+
+        const int32x4_t norm_max =
+            vdupq_n_s32(
+                kNormMax);
+
+        const int32x4_t out_min =
+            vdupq_n_s32(
+                kOutMin);
+
+        const int32x4_t out_max =
+            vdupq_n_s32(
+                kOutMax);
+
+        for (int64_t row = 0;
+             row < rows;
+             ++row)
+        {
+            const int16_t *row_ptr =
+                input + row * hidden_size;
+
+            int8_t *out_ptr =
+                output + row * hidden_size;
+
+            // ----------------------------------------------------
+            // INT64 stats
+            // ----------------------------------------------------
+
+            const LayerNorm64RowStats stats =
+                compute_row_stats64_simd(
+                    row_ptr,
+                    hidden_size);
+
+            if (stats.variance < 0 ||
+                stats.variance >
+                    static_cast<int64_t>(
+                        std::numeric_limits<int32_t>::max()))
+            {
+                throw std::overflow_error(
+                    "LayerNorm64 variance does not fit INT32");
+            }
+
+            const int32_t variance =
+                static_cast<int32_t>(
+                    stats.variance);
+
+            // ----------------------------------------------------
+            // Reuse existing bit-exact integer FISR.
+            //
+            // LayerNorm64:
+            //   rsqrt_offset = 15
+            // ----------------------------------------------------
+
+            int32_t invstd = 0;
+
+            layernorm32_rsqrt_scalar(
+                &variance,
+                &invstd,
+                1,
+                rsqrt_offset);
+
+            // ----------------------------------------------------
+            // FISR scale compensation.
+            //
+            // offset 15 vs original offset 13 => +2 bits.
+            // ----------------------------------------------------
+
+            const int32_t norm_shift_signed =
+                static_cast<int32_t>(
+                    ln_shift) +
+                additional_offset;
+
+            const uint32_t norm_shift =
+                static_cast<uint32_t>(
+                    norm_shift_signed);
+
+            const uint32_t final_shift =
+                static_cast<uint32_t>(
+                    static_cast<int32_t>(
+                        out_shift));
+
+            const int32x4_t mean_vec =
+                vdupq_n_s32(
+                    stats.mean);
+
+            const int32x4_t invstd_vec =
+                vdupq_n_s32(
+                    invstd);
+
+            const int32x4_t ln_mul_vec =
+                vdupq_n_s32(
+                    static_cast<int32_t>(
+                        ln_multiplier));
+
+            // ----------------------------------------------------
+            // Same normalization / affine / requant path
+            // as LayerNorm32 SIMD.
+            // ----------------------------------------------------
+
+            int64_t col = 0;
+
+            for (;
+                 col + 8 <= hidden_size;
+                 col += 8)
+            {
+                const int16x8_t x16 =
+                    vld1q_s16(
+                        row_ptr + col);
+
+                int32x4_t x_lo =
+                    vmovl_s16(
+                        vget_low_s16(x16));
+
+                int32x4_t x_hi =
+                    vmovl_s16(
+                        vget_high_s16(x16));
+
+                // centered
+                x_lo =
+                    vsubq_s32(
+                        x_lo,
+                        mean_vec);
+
+                x_hi =
+                    vsubq_s32(
+                        x_hi,
+                        mean_vec);
+
+                // centered * invstd
+                //
+                // Keep low-32-bit semantics identical to
+                // the existing LayerNorm32 path.
+                x_lo =
+                    vmulq_s32(
+                        x_lo,
+                        invstd_vec);
+
+                x_hi =
+                    vmulq_s32(
+                        x_hi,
+                        invstd_vec);
+
+                // * ln_multiplier
+                x_lo =
+                    vmulq_s32(
+                        x_lo,
+                        ln_mul_vec);
+
+                x_hi =
+                    vmulq_s32(
+                        x_hi,
+                        ln_mul_vec);
+
+                // FISR scale compensation + LN requant
+                x_lo =
+                    rounding_rshift_s32x4(
+                        x_lo,
+                        norm_shift);
+
+                x_hi =
+                    rounding_rshift_s32x4(
+                        x_hi,
+                        norm_shift);
+
+                // INT15 clamp
+                x_lo =
+                    vminq_s32(
+                        vmaxq_s32(
+                            x_lo,
+                            norm_min),
+                        norm_max);
+
+                x_hi =
+                    vminq_s32(
+                        vmaxq_s32(
+                            x_hi,
+                            norm_min),
+                        norm_max);
+
+                // ------------------------------------------------
+                // INT8 weight -> INT32
+                // ------------------------------------------------
+
+                const int8x8_t w8 =
+                    vld1_s8(
+                        weight + col);
+
+                const int16x8_t w16 =
+                    vmovl_s8(w8);
+
+                const int32x4_t w_lo =
+                    vmovl_s16(
+                        vget_low_s16(w16));
+
+                const int32x4_t w_hi =
+                    vmovl_s16(
+                        vget_high_s16(w16));
+
+                x_lo =
+                    vmulq_s32(
+                        x_lo,
+                        w_lo);
+
+                x_hi =
+                    vmulq_s32(
+                        x_hi,
+                        w_hi);
+
+                if (has_bias)
+                {
+                    x_lo =
+                        vaddq_s32(
+                            x_lo,
+                            vld1q_s32(
+                                bias + col));
+
+                    x_hi =
+                        vaddq_s32(
+                            x_hi,
+                            vld1q_s32(
+                                bias + col + 4));
+                }
+
+                // signed INT32 x UINT32 -> high 32 bits
+                x_lo =
+                    mulhi_s32_u32x4(
+                        x_lo,
+                        out_multiplier);
+
+                x_hi =
+                    mulhi_s32_u32x4(
+                        x_hi,
+                        out_multiplier);
+
+                x_lo =
+                    rounding_rshift_s32x4(
+                        x_lo,
+                        final_shift);
+
+                x_hi =
+                    rounding_rshift_s32x4(
+                        x_hi,
+                        final_shift);
+
+                x_lo =
+                    vminq_s32(
+                        vmaxq_s32(
+                            x_lo,
+                            out_min),
+                        out_max);
+
+                x_hi =
+                    vminq_s32(
+                        vmaxq_s32(
+                            x_hi,
+                            out_min),
+                        out_max);
+
+                const int16x8_t y16 =
+                    vcombine_s16(
+                        vmovn_s32(x_lo),
+                        vmovn_s32(x_hi));
+
+                const int8x8_t y8 =
+                    vmovn_s16(y16);
+
+                vst1_s8(
+                    out_ptr + col,
+                    y8);
+            }
+
+            // ----------------------------------------------------
+            // Scalar tail.
             // ----------------------------------------------------
 
             for (;
