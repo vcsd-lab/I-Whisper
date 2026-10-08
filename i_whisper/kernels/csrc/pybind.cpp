@@ -197,6 +197,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         &layernorm32_rsqrt_scalar_torch,
         "I-Whisper complete LayerNorm32 rsqrt scalar kernel",
         pybind11::arg("input"));
+
+    m.def(
+        "layernorm_stats_raw_benchmark",
+        &layernorm_stats_raw_benchmark_torch,
+        "Raw LayerNorm32 vs LayerNorm64 SIMD stats benchmark",
+        pybind11::arg("input"),
+        pybind11::arg("warmup"),
+        pybind11::arg("repeat"));
+
     m.def(
         "rounding_rshift_debug",
         &rounding_rshift_debug,
@@ -373,7 +382,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
         pybind11::arg("addend"),
         pybind11::arg("multiplier"),
         pybind11::arg("shift"));
-        
+
     m.def(
         "classifier_accum_scalar",
         &classifier_accum_scalar_torch,

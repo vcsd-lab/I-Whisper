@@ -264,6 +264,279 @@ namespace iwhisper
             int32_t renorm_shift;
         };
 
+        template <int Shift>
+        static inline int32_t
+        accumulate_variance_shifted_simd(
+            const int16_t *row_ptr,
+            int64_t hidden_size,
+            int32_t row_mean)
+        {
+            static_assert(
+                Shift >= 0 &&
+                Shift <= 16 &&
+                (Shift % 2) == 0);
+
+            const int32x4_t mean_vec =
+                vdupq_n_s32(
+                    row_mean);
+
+            int32x4_t var0 =
+                vdupq_n_s32(0);
+
+            int32x4_t var1 =
+                vdupq_n_s32(0);
+
+            int32x4_t var2 =
+                vdupq_n_s32(0);
+
+            int32x4_t var3 =
+                vdupq_n_s32(0);
+
+            int64_t col = 0;
+
+            for (;
+                 col + 16 <= hidden_size;
+                 col += 16)
+            {
+                const int16x8_t x16_0 =
+                    vld1q_s16(
+                        row_ptr + col);
+
+                const int16x8_t x16_1 =
+                    vld1q_s16(
+                        row_ptr + col + 8);
+
+                int32x4_t x0_lo =
+                    vmovl_s16(
+                        vget_low_s16(x16_0));
+
+                int32x4_t x0_hi =
+                    vmovl_s16(
+                        vget_high_s16(x16_0));
+
+                int32x4_t x1_lo =
+                    vmovl_s16(
+                        vget_low_s16(x16_1));
+
+                int32x4_t x1_hi =
+                    vmovl_s16(
+                        vget_high_s16(x16_1));
+
+                x0_lo =
+                    vsubq_s32(
+                        x0_lo,
+                        mean_vec);
+
+                x0_hi =
+                    vsubq_s32(
+                        x0_hi,
+                        mean_vec);
+
+                x1_lo =
+                    vsubq_s32(
+                        x1_lo,
+                        mean_vec);
+
+                x1_hi =
+                    vsubq_s32(
+                        x1_hi,
+                        mean_vec);
+
+                const int32x4_t square0_lo =
+                    vmulq_s32(
+                        x0_lo,
+                        x0_lo);
+
+                const int32x4_t square0_hi =
+                    vmulq_s32(
+                        x0_hi,
+                        x0_hi);
+
+                const int32x4_t square1_lo =
+                    vmulq_s32(
+                        x1_lo,
+                        x1_lo);
+
+                const int32x4_t square1_hi =
+                    vmulq_s32(
+                        x1_hi,
+                        x1_hi);
+
+                if constexpr (Shift == 0)
+                {
+                    // No shift required.
+                    var0 =
+                        vaddq_s32(
+                            var0,
+                            square0_lo);
+
+                    var1 =
+                        vaddq_s32(
+                            var1,
+                            square0_hi);
+
+                    var2 =
+                        vaddq_s32(
+                            var2,
+                            square1_lo);
+
+                    var3 =
+                        vaddq_s32(
+                            var3,
+                            square1_hi);
+                }
+                else
+                {
+                    // acc += rounded_right_shift(square, Shift)
+                    //
+                    // Compile-time Shift allows AArch64 to emit:
+                    //
+                    // SRSRA Vd.4S, Vn.4S, #Shift
+
+                    var0 =
+                        vrsraq_n_s32(
+                            var0,
+                            square0_lo,
+                            Shift);
+
+                    var1 =
+                        vrsraq_n_s32(
+                            var1,
+                            square0_hi,
+                            Shift);
+
+                    var2 =
+                        vrsraq_n_s32(
+                            var2,
+                            square1_lo,
+                            Shift);
+
+                    var3 =
+                        vrsraq_n_s32(
+                            var3,
+                            square1_hi,
+                            Shift);
+                }
+            }
+
+            const int32x4_t var01 =
+                vaddq_s32(
+                    var0,
+                    var1);
+
+            const int32x4_t var23 =
+                vaddq_s32(
+                    var2,
+                    var3);
+
+            int32_t var_sum =
+                vaddvq_s32(
+                    vaddq_s32(
+                        var01,
+                        var23));
+
+            // Generic tail.
+            //
+            // All currently supported hidden sizes are divisible by 16,
+            // but retain this path for completeness.
+            for (;
+                 col < hidden_size;
+                 ++col)
+            {
+                const int32_t centered =
+                    static_cast<int32_t>(
+                        row_ptr[col]) -
+                    row_mean;
+
+                const int32_t square =
+                    centered * centered;
+
+                if constexpr (Shift == 0)
+                {
+                    var_sum += square;
+                }
+                else
+                {
+                    var_sum +=
+                        iwhisper::fixedpoint::rounding_rshift(
+                            square,
+                            Shift);
+                }
+            }
+
+            return var_sum;
+        }
+
+        static inline int32_t
+        accumulate_variance_shifted_dispatch(
+            const int16_t *row_ptr,
+            int64_t hidden_size,
+            int32_t row_mean,
+            int32_t renorm_shift)
+        {
+            switch (renorm_shift)
+            {
+            case 0:
+                return accumulate_variance_shifted_simd<0>(
+                    row_ptr,
+                    hidden_size,
+                    row_mean);
+
+            case 2:
+                return accumulate_variance_shifted_simd<2>(
+                    row_ptr,
+                    hidden_size,
+                    row_mean);
+
+            case 4:
+                return accumulate_variance_shifted_simd<4>(
+                    row_ptr,
+                    hidden_size,
+                    row_mean);
+
+            case 6:
+                return accumulate_variance_shifted_simd<6>(
+                    row_ptr,
+                    hidden_size,
+                    row_mean);
+
+            case 8:
+                return accumulate_variance_shifted_simd<8>(
+                    row_ptr,
+                    hidden_size,
+                    row_mean);
+
+            case 10:
+                return accumulate_variance_shifted_simd<10>(
+                    row_ptr,
+                    hidden_size,
+                    row_mean);
+
+            case 12:
+                return accumulate_variance_shifted_simd<12>(
+                    row_ptr,
+                    hidden_size,
+                    row_mean);
+
+            case 14:
+                return accumulate_variance_shifted_simd<14>(
+                    row_ptr,
+                    hidden_size,
+                    row_mean);
+
+            case 16:
+                return accumulate_variance_shifted_simd<16>(
+                    row_ptr,
+                    hidden_size,
+                    row_mean);
+
+            default:
+                throw std::runtime_error(
+                    "unexpected LayerNorm32 renorm shift: " + std::to_string(
+                                                                  renorm_shift));
+            }
+        }
+
         static inline LayerNormRowStats
         compute_row_stats_simd(
             const int16_t *row_ptr,
@@ -280,6 +553,17 @@ namespace iwhisper
             int32x4_t sum_hi =
                 vdupq_n_s32(0);
 
+            // Track input extrema while computing the row sum.
+            // These extrema are sufficient to recover the maximum
+            // absolute centered value after the mean is known.
+            int16x8_t min_vec =
+                vdupq_n_s16(
+                    std::numeric_limits<int16_t>::max());
+
+            int16x8_t max_vec =
+                vdupq_n_s16(
+                    std::numeric_limits<int16_t>::min());
+
             int64_t col = 0;
 
             for (;
@@ -290,6 +574,7 @@ namespace iwhisper
                     vld1q_s16(
                         row_ptr + col);
 
+                // Sum
                 const int32x4_t x_lo =
                     vmovl_s16(
                         vget_low_s16(x16));
@@ -307,18 +592,49 @@ namespace iwhisper
                     vaddq_s32(
                         sum_hi,
                         x_hi);
+
+                // Min / max
+                min_vec =
+                    vminq_s16(
+                        min_vec,
+                        x16);
+
+                max_vec =
+                    vmaxq_s16(
+                        max_vec,
+                        x16);
             }
 
             int32_t row_sum =
                 vaddvq_s32(sum_lo) + vaddvq_s32(sum_hi);
 
+            int32_t row_min =
+                static_cast<int32_t>(
+                    vminvq_s16(min_vec));
+
+            int32_t row_max =
+                static_cast<int32_t>(
+                    vmaxvq_s16(max_vec));
+
             for (;
                  col < hidden_size;
                  ++col)
             {
-                row_sum +=
+                const int32_t value =
                     static_cast<int32_t>(
                         row_ptr[col]);
+
+                row_sum += value;
+
+                row_min =
+                    std::min(
+                        row_min,
+                        value);
+
+                row_max =
+                    std::max(
+                        row_max,
+                        value);
             }
 
             const int32_t row_mean =
@@ -327,91 +643,55 @@ namespace iwhisper
                     hidden_size);
 
             // --------------------------------------------------------
-            // Pass 2:
-            // centered square maximum
+            // Determine the maximum centered magnitude without an
+            // additional row scan.
+            //
+            // For any fixed mean:
+            //
+            //   max_i |x_i - mean|
+            //     = max(
+            //         |min(x) - mean|,
+            //         |max(x) - mean|)
+            //
+            // Therefore the maximum centered square can be obtained
+            // exactly from the row extrema collected during Pass 1.
             // --------------------------------------------------------
 
-            const int32x4_t mean_vec =
-                vdupq_n_s32(
-                    row_mean);
-
-            int32x4_t max_lo =
-                vdupq_n_s32(0);
-
-            int32x4_t max_hi =
-                vdupq_n_s32(0);
-
-            col = 0;
-
-            for (;
-                 col + 8 <= hidden_size;
-                 col += 8)
-            {
-                const int16x8_t x16 =
-                    vld1q_s16(
-                        row_ptr + col);
-
-                int32x4_t x_lo =
-                    vmovl_s16(
-                        vget_low_s16(x16));
-
-                int32x4_t x_hi =
-                    vmovl_s16(
-                        vget_high_s16(x16));
-
-                x_lo =
-                    vsubq_s32(
-                        x_lo,
-                        mean_vec);
-
-                x_hi =
-                    vsubq_s32(
-                        x_hi,
-                        mean_vec);
-
-                const int32x4_t square_lo =
-                    vmulq_s32(
-                        x_lo,
-                        x_lo);
-
-                const int32x4_t square_hi =
-                    vmulq_s32(
-                        x_hi,
-                        x_hi);
-
-                max_lo =
-                    vmaxq_s32(
-                        max_lo,
-                        square_lo);
-
-                max_hi =
-                    vmaxq_s32(
-                        max_hi,
-                        square_hi);
-            }
-
-            int32_t max_square =
+            const int64_t dist_min =
                 std::max(
-                    vmaxvq_s32(max_lo),
-                    vmaxvq_s32(max_hi));
+                    static_cast<int64_t>(row_min),
+                    static_cast<int64_t>(row_mean)) -
+                std::min(
+                    static_cast<int64_t>(row_min),
+                    static_cast<int64_t>(row_mean));
 
-            for (;
-                 col < hidden_size;
-                 ++col)
+            const int64_t dist_max =
+                std::max(
+                    static_cast<int64_t>(row_max),
+                    static_cast<int64_t>(row_mean)) -
+                std::min(
+                    static_cast<int64_t>(row_max),
+                    static_cast<int64_t>(row_mean));
+
+            const int64_t max_abs =
+                std::max(
+                    dist_min,
+                    dist_max);
+
+            const int64_t max_square64 =
+                max_abs * max_abs;
+
+            if (
+                max_square64 >
+                std::numeric_limits<int32_t>::max())
             {
-                const int32_t centered =
-                    static_cast<int32_t>(
-                        row_ptr[col]) -
-                    row_mean;
-
-                const int32_t square =
-                    centered * centered;
-
-                max_square =
-                    std::max(
-                        max_square,
-                        square);
+                throw std::overflow_error(
+                    "LayerNorm32 centered square exceeds INT32");
             }
+
+            const int32_t max_square =
+                static_cast<int32_t>(
+                    max_square64);
 
             const int32_t max_bit_length =
                 bit_length_nonnegative(
@@ -425,99 +705,12 @@ namespace iwhisper
             renorm_shift =
                 (renorm_shift + 1) & ~int32_t{1};
 
-            // --------------------------------------------------------
-            // Pass 3:
-            // rounded shifted-square accumulation
-            // --------------------------------------------------------
-
-            int32x4_t var_lo =
-                vdupq_n_s32(0);
-
-            int32x4_t var_hi =
-                vdupq_n_s32(0);
-
-            col = 0;
-
-            for (;
-                 col + 8 <= hidden_size;
-                 col += 8)
-            {
-                const int16x8_t x16 =
-                    vld1q_s16(
-                        row_ptr + col);
-
-                int32x4_t x_lo =
-                    vmovl_s16(
-                        vget_low_s16(x16));
-
-                int32x4_t x_hi =
-                    vmovl_s16(
-                        vget_high_s16(x16));
-
-                x_lo =
-                    vsubq_s32(
-                        x_lo,
-                        mean_vec);
-
-                x_hi =
-                    vsubq_s32(
-                        x_hi,
-                        mean_vec);
-
-                int32x4_t square_lo =
-                    vmulq_s32(
-                        x_lo,
-                        x_lo);
-
-                int32x4_t square_hi =
-                    vmulq_s32(
-                        x_hi,
-                        x_hi);
-
-                square_lo =
-                    rounding_rshift_s32x4(
-                        square_lo,
-                        static_cast<uint32_t>(
-                            renorm_shift));
-
-                square_hi =
-                    rounding_rshift_s32x4(
-                        square_hi,
-                        static_cast<uint32_t>(
-                            renorm_shift));
-
-                var_lo =
-                    vaddq_s32(
-                        var_lo,
-                        square_lo);
-
-                var_hi =
-                    vaddq_s32(
-                        var_hi,
-                        square_hi);
-            }
-
-            int32_t var_sum =
-                vaddvq_s32(var_lo) + vaddvq_s32(var_hi);
-
-            for (;
-                 col < hidden_size;
-                 ++col)
-            {
-                const int32_t centered =
-                    static_cast<int32_t>(
-                        row_ptr[col]) -
-                    row_mean;
-
-                const int32_t square =
-                    centered * centered;
-
-                var_sum +=
-                    iwhisper::fixedpoint::rounding_rshift(
-                        square,
-                        static_cast<uint32_t>(
-                            renorm_shift));
-            }
+            const int32_t var_sum =
+                accumulate_variance_shifted_dispatch(
+                    row_ptr,
+                    hidden_size,
+                    row_mean,
+                    renorm_shift);
 
             const int32_t variance =
                 apply_norm_reduce(

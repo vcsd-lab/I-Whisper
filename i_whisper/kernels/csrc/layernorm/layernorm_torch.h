@@ -67,3 +67,9 @@ torch::Tensor layernorm32_simd_torch(
     const torch::Tensor &ln_shift,
     const torch::Tensor &out_multiplier,
     const torch::Tensor &out_shift);
+
+std::tuple<double, double>
+layernorm_stats_raw_benchmark_torch(
+    const torch::Tensor &input,
+    int64_t warmup,
+    int64_t repeat);

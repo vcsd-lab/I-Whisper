@@ -314,3 +314,111 @@ def test_layernorm32_stats_simd_3d(
     )
 
     _assert_stats_equal(x)
+
+@pytest.mark.parametrize(
+    "hidden_size",
+    [
+        384,
+        768,
+        1280,
+    ],
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        -16383,
+        -12000,
+        12000,
+        16383,
+    ],
+)
+def test_layernorm32_stats_simd_constant_approx_mean(
+    hidden_size,
+    value,
+):
+    x = torch.full(
+        (5, hidden_size),
+        value,
+        dtype=torch.int16,
+    )
+
+    mean_scalar, var_scalar, shift_scalar = (
+        _C.layernorm32_stats_scalar(
+            x.contiguous()
+        )
+    )
+
+    mean_simd, var_simd, shift_simd = (
+        _C.layernorm32_stats_simd(
+            x.contiguous()
+        )
+    )
+
+    assert torch.equal(
+        mean_simd,
+        mean_scalar,
+    )
+
+    assert torch.equal(
+        var_simd,
+        var_scalar,
+    )
+
+    assert torch.equal(
+        shift_simd,
+        shift_scalar,
+    )
+
+@pytest.mark.parametrize(
+    "amplitude",
+    [
+        32,
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096,
+        8192,
+        16383,
+    ],
+)
+def test_layernorm32_stats_simd_shift_dispatch(
+    amplitude,
+):
+    hidden_size = 512
+
+    x = torch.empty(
+        (4, hidden_size),
+        dtype=torch.int16,
+    )
+
+    x[:, 0::2] = amplitude
+    x[:, 1::2] = -amplitude
+
+    mean_ref, var_ref, shift_ref = (
+        _C.layernorm32_stats_scalar(
+            x.contiguous()
+        )
+    )
+
+    mean, var, shift = (
+        _C.layernorm32_stats_simd(
+            x.contiguous()
+        )
+    )
+
+    assert torch.equal(
+        mean,
+        mean_ref,
+    )
+
+    assert torch.equal(
+        var,
+        var_ref,
+    )
+
+    assert torch.equal(
+        shift,
+        shift_ref,
+    )
