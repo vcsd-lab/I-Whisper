@@ -196,6 +196,44 @@ Calibration settings and datasets affect the resulting model accuracy. Reproduci
 
 ## Running Integer Inference
 
+### End-to-End Quantization and Inference Smoke Test
+
+The following command loads the original Whisper Base checkpoint, performs offline smoothing and quantization calibration, evaluates ten samples from the local LibriSpeech `test-other` dataset, and exports the integer model:
+
+```bash
+python3 quantize.py \
+    --model base \
+    --calibrate \
+    --smooth \
+    --test \
+    --sample 10 \
+    --save_model
+```
+
+The generated checkpoint is saved to:
+
+```text
+CKPT/iwhisper-base/
+├── config.json
+└── model.safetensors
+```
+
+The export procedure also verifies the saved and reloaded model states for exact tensor equality.
+
+To evaluate the newly serialized integer model using the CPU backend:
+
+```bash
+python3 int_transcribe.py \
+    --model base \
+    --device cpu \
+    --test \
+    --sample 1
+```
+
+This workflow was successfully exercised on the validated NVIDIA NGC PyTorch 24.05 environment.
+
+**Note:** The reference quantization script currently uses LibriSpeech `test-other` for calibration as well as evaluation. This example is intended to verify functional correctness and checkpoint reproducibility, not to establish an independent held-out WER benchmark.
+
 ### Single-audio transcription
 
 For the current reference script, place an audio file at:
