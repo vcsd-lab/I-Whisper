@@ -125,7 +125,11 @@ parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else
 parser.add_argument('--test', default=False, action='store_true')
 parser.add_argument('--sample', default=None, type=int, help='number of samples to test')
 parser.add_argument('--logdir', default='EXELOG', type=str, help='directory to save logs')
-parser.add_argument('--debug', default=False, action='store_true')
+parser.add_argument(
+    "--debug",
+    action="store_true",
+    help="enable LayerNorm overflow diagnostics (adds runtime overhead)",
+)
 parser.add_argument('-v', '--verbose', action='store_true', default=False, help='increase output verbosity')
 args = parser.parse_args()
 # torch.set_printoptions(precision=8,sci_mode=False,threshold=500)
@@ -204,6 +208,20 @@ set_conv1d_backend(model, backend="simd", logger=logger)  # set backend for Conv
 set_audio_encoder_backend(model, backend="simd", logger=logger)  # set backend for Add+Requant15 layers
 set_text_decoder_backend(model, backend="simd", logger=logger)  # set backend for TextDecoder layers
 
+collector = None
+
+if args.debug:
+    from analysis.layernorm_overflow_analysis import (
+        LayerNormOverflowCollector,
+    )
+
+    collector = LayerNormOverflowCollector()
+    collector.attach(model)
+
+    logger.warning(
+        "LayerNorm overflow diagnostics enabled; "
+        "inference timings include collector overhead."
+    )
 
 if args.test:
     '''Load audio dataset & ground truth'''
@@ -296,3 +314,17 @@ else:
         logger.info(f"clip {idx:>2d}: {result.text}")
     t2 = time.time()
     logger.info(f"Total inference time for {len(audio_list)} clips: {t2-t1:.2f} seconds")
+
+if collector is not None:
+    collector.detach()
+
+    collector.write_csv(
+        os.path.join(
+            args.logdir,
+            f"layernorm_overflow_{int(time.time())}.csv",
+        )
+    )
+
+    logger.info(
+        f"LayerNorm overflow summary: {collector.summary()}"
+    )
