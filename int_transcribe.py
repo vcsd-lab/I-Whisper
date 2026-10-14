@@ -276,7 +276,7 @@ else:
     logger.info(f"Total number of Whisper {args.model} parameters: {total_params}")
 
     '''Load Audio & PreProcessing'''
-    audio = i_whisper.load_audio("vcsdl_dataset/tt.mp3", raw=True)
+    audio = i_whisper.load_audio("vcsdl_dataset/tt.mp3")
     logger.info(f"Original audio length: {audio.shape[0]/16000:.2f} seconds")
     audio_list = []
     while audio.shape[0] > 30*16000:
