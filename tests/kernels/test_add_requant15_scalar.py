@@ -66,7 +66,7 @@ def test_add_requant15_scalar_random(shape, per_channel):
 
     assert out.dtype == torch.int16
     assert out.shape == ref.shape
-    assert torch.equal(out, ref)
+    assert torch.equal(out.to(torch.int64), ref.to(torch.int64))
 
 
 @pytest.mark.parametrize("shift_value", [-8, -1, 0, 1, 7, 31, 32, 64])
@@ -180,10 +180,26 @@ def test_add_requant15_scalar_does_not_modify_inputs():
 
     _run(x, pos, multiplier, shift)
 
-    assert torch.equal(x, refs[0])
-    assert torch.equal(pos, refs[1])
-    assert torch.equal(multiplier, refs[2])
-    assert torch.equal(shift, refs[3])
+    assert x.dtype == refs[0].dtype
+    assert torch.equal(
+        x.to(torch.int64),
+        refs[0].to(torch.int64),
+    )
+    assert pos.dtype == refs[1].dtype
+    assert torch.equal(
+        pos.to(torch.int64),
+        refs[1].to(torch.int64),
+    )
+    assert multiplier.dtype == refs[2].dtype
+    assert torch.equal(
+        multiplier.to(torch.int64),
+        refs[2].to(torch.int64),
+    )
+    assert shift.dtype == refs[3].dtype
+    assert torch.equal(
+        shift.to(torch.int64),
+        refs[3].to(torch.int64),
+    )
 
 
 def test_add_requant15_scalar_rejects_bad_addend_shape():

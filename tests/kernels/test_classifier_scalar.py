@@ -140,8 +140,8 @@ def test_classifier_accum_scalar_matches_torch(
     assert out.shape == ref.shape
 
     assert torch.equal(
-        out,
-        ref,
+        out.to(torch.int64),
+        ref.to(torch.int64),
     ), "classifier raw accumulation mismatch"
 
 
@@ -401,10 +401,26 @@ def test_classifier_scalar_does_not_modify_inputs():
         shift,
     )
 
-    assert torch.equal(x, x_ref)
-    assert torch.equal(weight, w_ref)
-    assert torch.equal(multiplier, m_ref)
-    assert torch.equal(shift, s_ref)
+    assert x.dtype == x_ref.dtype
+    assert torch.equal(
+        x.to(torch.int64),
+        x_ref.to(torch.int64),
+    )
+    assert weight.dtype == w_ref.dtype
+    assert torch.equal(
+        weight.to(torch.int64),
+        w_ref.to(torch.int64),
+    )
+    assert multiplier.dtype == m_ref.dtype
+    assert torch.equal(
+        multiplier.to(torch.int64),
+        m_ref.to(torch.int64),
+    )
+    assert shift.dtype == s_ref.dtype
+    assert torch.equal(
+        shift.to(torch.int64),
+        s_ref.to(torch.int64),
+    )
 
 
 def test_classifier_scalar_rejects_hidden_mismatch():

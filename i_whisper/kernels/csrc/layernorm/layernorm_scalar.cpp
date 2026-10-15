@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 
 namespace iwhisper
@@ -47,6 +48,40 @@ namespace iwhisper
                 return apply_512_norm_reduce(x);
             case 384:
                 return apply_384_norm_reduce(x);
+            default:
+                throw std::invalid_argument(
+                    "unsupported LayerNorm hidden size: " +
+                    std::to_string(hidden_size));
+            }
+        }
+
+        static inline int64_t apply_norm_reduce64(
+            int64_t x,
+            int64_t hidden_size)
+        {
+            switch (hidden_size)
+            {
+            case 1280:
+                return (
+                           x + (x >> 1)) >>
+                       11;
+
+            case 1024:
+                return x >> 10;
+
+            case 768:
+                return (
+                           x + (x >> 2) + (x >> 3)) >>
+                       10;
+
+            case 512:
+                return x >> 9;
+
+            case 384:
+                return (
+                           x + (x >> 2) + (x >> 3)) >>
+                       9;
+
             default:
                 throw std::invalid_argument(
                     "unsupported LayerNorm hidden size: " +
@@ -191,6 +226,77 @@ namespace iwhisper
         return static_cast<int32_t>(
             ua * ub);
     }
+
+    void layernorm64_stats_scalar(
+        const int16_t *input,
+        int32_t *mean,
+        int64_t *variance,
+        int64_t rows,
+        int64_t hidden_size)
+    {
+        for (int64_t row = 0;
+             row < rows;
+             ++row)
+        {
+            const int16_t *row_ptr =
+                input + row * hidden_size;
+
+            // ----------------------------------------------------
+            // Pass 1:
+            // Keep mean computation identical to LayerNorm32.
+            // ----------------------------------------------------
+
+            int32_t row_sum = 0;
+
+            for (int64_t col = 0;
+                 col < hidden_size;
+                 ++col)
+            {
+                row_sum +=
+                    static_cast<int32_t>(
+                        row_ptr[col]);
+            }
+
+            const int32_t row_mean =
+                apply_norm_reduce(
+                    row_sum,
+                    hidden_size);
+
+            mean[row] =
+                row_mean;
+
+            // ----------------------------------------------------
+            // Pass 2:
+            // Full-precision centered-square accumulation.
+            //
+            // No row-wise pre-shift is applied here.
+            // ----------------------------------------------------
+
+            int64_t var_sum = 0;
+
+            for (int64_t col = 0;
+                 col < hidden_size;
+                 ++col)
+            {
+                const int64_t centered =
+                    static_cast<int64_t>(
+                        row_ptr[col]) -
+                    static_cast<int64_t>(
+                        row_mean);
+
+                const int64_t square =
+                    centered * centered;
+
+                var_sum += square;
+            }
+
+            variance[row] =
+                apply_norm_reduce64(
+                    var_sum,
+                    hidden_size);
+        }
+    }
+
 
     static inline int32_t wrap_sub_s32(
         int32_t a,
@@ -503,6 +609,207 @@ namespace iwhisper
                         value,
                         static_cast<int32_t>(
                             out_shift));
+
+                value =
+                    std::clamp(
+                        value,
+                        kInt8Min,
+                        kInt8Max);
+
+                row_out[col] =
+                    static_cast<int8_t>(
+                        value);
+            }
+        }
+    }
+
+    void layernorm64_scalar(
+        const int16_t *input,
+        const int8_t *weight,
+        const int32_t *bias,
+        uint8_t ln_multiplier,
+        int8_t ln_shift,
+        uint32_t out_multiplier,
+        int8_t out_shift,
+        uint32_t rsqrt_offset,
+        int32_t additional_offset,
+        int8_t *output,
+        int64_t rows,
+        int64_t hidden_size,
+        bool has_bias)
+    {
+        constexpr int32_t kInt15Min = -16383;
+        constexpr int32_t kInt15Max = 16383;
+        constexpr int32_t kInt8Min = -127;
+        constexpr int32_t kInt8Max = 127;
+
+        for (int64_t row = 0;
+             row < rows;
+             ++row)
+        {
+            const int16_t *row_in =
+                input + row * hidden_size;
+
+            int8_t *row_out =
+                output + row * hidden_size;
+
+            // ----------------------------------------------------
+            // Pass 1:
+            // Mean computation is intentionally identical to
+            // LayerNorm32.
+            // ----------------------------------------------------
+
+            int32_t row_sum = 0;
+
+            for (int64_t col = 0;
+                 col < hidden_size;
+                 ++col)
+            {
+                row_sum +=
+                    static_cast<int32_t>(
+                        row_in[col]);
+            }
+
+            const int32_t row_mean =
+                apply_norm_reduce(
+                    row_sum,
+                    hidden_size);
+
+            // ----------------------------------------------------
+            // Pass 2:
+            // Full INT64 centered-square accumulation.
+            //
+            // Unlike LayerNorm32, no row-wise pre-shift is
+            // applied before accumulation.
+            // ----------------------------------------------------
+
+            int64_t var_sum = 0;
+
+            for (int64_t col = 0;
+                 col < hidden_size;
+                 ++col)
+            {
+                const int64_t centered =
+                    static_cast<int64_t>(
+                        row_in[col]) -
+                    static_cast<int64_t>(
+                        row_mean);
+
+                const int64_t square =
+                    centered * centered;
+
+                var_sum += square;
+            }
+
+            const int64_t variance64 =
+                apply_norm_reduce64(
+                    var_sum,
+                    hidden_size);
+
+            // Full variance must fit the existing INT32 FISR
+            // interface. Keep this explicit rather than silently
+            // narrowing.
+            if (variance64 < 0 ||
+                variance64 >
+                    static_cast<int64_t>(
+                        std::numeric_limits<int32_t>::max()))
+            {
+                throw std::overflow_error(
+                    "LayerNorm64 variance does not fit INT32");
+            }
+
+            const int32_t variance =
+                static_cast<int32_t>(
+                    variance64);
+
+            // ----------------------------------------------------
+            // Existing integer FISR.
+            //
+            // LayerNorm64 uses a larger rsqrt offset because the
+            // unshifted variance has a larger dynamic range.
+            // ----------------------------------------------------
+
+            const int32_t invstd =
+                layernorm32_fisr_one(
+                    variance,
+                    rsqrt_offset);
+
+            // ----------------------------------------------------
+            // Compensate for the increased FISR fixed-point scale.
+            //
+            // For rsqrt_offset = 15 versus the original 13:
+            //
+            // additional_offset = 2
+            // ----------------------------------------------------
+
+            const int32_t normalize_shift =
+                static_cast<int32_t>(
+                    ln_shift) +
+                additional_offset;
+
+            // ----------------------------------------------------
+            // Normalize + affine + output requant.
+            //
+            // Keep this path identical to LayerNorm32.
+            // ----------------------------------------------------
+
+            for (int64_t col = 0;
+                 col < hidden_size;
+                 ++col)
+            {
+                const int32_t centered =
+                    static_cast<int32_t>(
+                        row_in[col]) -
+                    row_mean;
+
+                int32_t value =
+                    wrap_mul_s32(
+                        centered,
+                        invstd);
+
+                value =
+                    wrap_mul_s32(
+                        value,
+                        static_cast<int32_t>(
+                            ln_multiplier));
+
+                value =
+                    iwhisper::fixedpoint::rounding_rshift(
+                        value,
+                        static_cast<uint32_t>(
+                            normalize_shift));
+
+                value =
+                    std::clamp(
+                        value,
+                        kInt15Min,
+                        kInt15Max);
+
+                value =
+                    wrap_mul_s32(
+                        value,
+                        static_cast<int32_t>(
+                            weight[col]));
+
+                if (has_bias)
+                {
+                    value =
+                        wrap_add_s32(
+                            value,
+                            bias[col]);
+                }
+
+                value =
+                    iwhisper::fixedpoint::mulh(
+                        value,
+                        out_multiplier);
+
+                value =
+                    iwhisper::fixedpoint::rounding_rshift(
+                        value,
+                        static_cast<uint32_t>(
+                            static_cast<int32_t>(
+                                out_shift)));
 
                 value =
                     std::clamp(

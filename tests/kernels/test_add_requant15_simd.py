@@ -169,7 +169,23 @@ def test_add_requant15_simd_does_not_modify_inputs():
 
     _run_simd(x, addend, multiplier, shift)
 
-    assert torch.equal(x, refs[0])
-    assert torch.equal(addend, refs[1])
-    assert torch.equal(multiplier, refs[2])
-    assert torch.equal(shift, refs[3])
+    assert x.dtype == refs[0].dtype
+    assert torch.equal(
+        x.to(torch.int64),
+        refs[0].to(torch.int64),
+    )
+    assert addend.dtype == refs[1].dtype
+    assert torch.equal(
+        addend.to(torch.int64),
+        refs[1].to(torch.int64),
+    )
+    assert multiplier.dtype == refs[2].dtype
+    assert torch.equal(
+        multiplier.to(torch.int64),
+        refs[2].to(torch.int64),
+    )
+    assert shift.dtype == refs[3].dtype
+    assert torch.equal(
+        shift.to(torch.int64),
+        refs[3].to(torch.int64),
+    )

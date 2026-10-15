@@ -1955,12 +1955,6 @@ namespace iwhisper
                         const int64_t bh =
                             row / q_length;
 
-                        const int64_t h =
-                            bh % heads;
-
-                        const int64_t b =
-                            bh / heads;
-
                         const int64_t head_base =
                             bh *
                             q_length *
