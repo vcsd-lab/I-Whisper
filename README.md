@@ -4,7 +4,8 @@
 
 I-Whisper focuses on hardware-friendly integer computation in Whisper's **Audio Encoder and Text Decoder**, with implementations and evaluation on CPU platforms including the Raspberry Pi 5.
 
-This repository accompanies our research presented at **APCCAS 2026**.
+<!-- This repository accompanies our research presented at **APCCAS 2026**. -->
+This repository accompanies our paper accepted for presentation at APCCAS 2026.
 
 ## Overview
 
