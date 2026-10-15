@@ -295,6 +295,18 @@ Remove `--sample` to evaluate the available dataset instead of a small subset.
 
 A ten-sample WER is a functional smoke test, not a substitute for the full LibriSpeech evaluation reported above.
 
+## Development Audio Samples
+
+The `vcsdl_dataset/` directory contains audio samples used for functional testing and exploratory analysis during I-Whisper development.
+
+These samples include self-recorded speech, text-to-speech (TTS) outputs, and other audio collected or generated during development. The original sources of some legacy samples can no longer be reliably identified.
+
+During development, additional voice-converted samples were used to examine ASR behavior across different speaker characteristics while preserving the spoken content. These experimental samples have been removed from the current release.
+
+The development audio samples are separate from the LibriSpeech evaluation dataset and were not used to calculate the WER results reported in this README.
+
+The repository's MIT License applies to the software and does not independently establish redistribution rights for third-party audio materials. Users should verify the applicable rights and licenses before reusing or redistributing these audio samples.
+
 ## Integer-Only Model Audit
 
 A standalone audit utility is available to inspect the integer Encoder/Decoder forward path:
