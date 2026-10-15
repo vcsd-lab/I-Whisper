@@ -49,7 +49,7 @@ I-Whisper was evaluated on the **LibriSpeech `test-other`** dataset across multi
 
 ### Filtered Evaluation
 
-The following results report Word Error Rate (WER, %, lower is better) under the **filtered evaluation protocol** for all three methods: FP32, Naive W8A8, and I-Whisper.
+The following results report Word Error Rate (WER, %, lower is better) under the filtered evaluation protocol.
 
 | Method | Tiny | Base | Small | Medium | Large |
 |---|---:|---:|---:|---:|---:|
@@ -57,19 +57,20 @@ The following results report Word Error Rate (WER, %, lower is better) under the
 | Naive W8A8 | 55.92 | 37.03 | 33.42 | 24.00 | 84.38 |
 | **I-Whisper (Ours)** | **25.23** | **19.36** | **13.98** | **10.89** | **12.98** |
 
-Under the filtered evaluation protocol, I-Whisper consistently achieves lower WER than Naive W8A8 across all five model sizes.
+The filtered evaluation excludes utterances with an individual WER greater than 100%. This filtering is applied separately to each model and method, so the evaluated sample subsets may differ.
 
-The filtered evaluation excludes samples that do not satisfy the successful-decoding criterion. The included samples and evaluation denominators may differ across models or methods.
+Under this protocol, I-Whisper achieves lower WER than Naive W8A8 across all five model sizes.
 
 ### All-Sample Evaluation
 
-For completeness, we additionally report I-Whisper's WER over the full evaluation set, including samples excluded by the filtered protocol.
+We additionally report WER over all **2,939 utterances** in the LibriSpeech `test-other` evaluation set, without excluding high-WER outliers.
 
 | Method | Tiny | Base | Small | Medium | Large |
 |---|---:|---:|---:|---:|---:|
-| I-Whisper (All-sample) | 26.86 | 20.58 | 30.99 | 11.34 | 18.33 |
+| FP32 | 19.58 | 14.94 | 10.52 | 9.92 | 6.93 |
+| I-Whisper (Ours) | 26.86 | 20.58 | 30.99 | 11.34 | 18.33 |
 
-**Evaluation note:** Filtered and all-sample results use different evaluation denominators and should not be directly compared. In particular, I-Whisper's all-sample WER should not be compared directly against the filtered FP32 or Naive W8A8 results.
+**Evaluation note:** Filtered results use method-dependent subsets and should not be interpreted as evaluations on identical utterances. All-sample results include the complete evaluation set. Naive W8A8 all-sample results are not included in this comparison.
 
 These research evaluation results are distinct from the small-sample functional smoke tests described later in this README.
 
