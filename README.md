@@ -355,12 +355,10 @@ as well as the developers of the open-source libraries used in this project.
 
 The official IEEE Xplore record, DOI, and BibTeX citation will be added once the conference proceedings are published.
 
-## License and Acknowledgments
+## License
 
 I-Whisper is released under the [MIT License](LICENSE).
 
 This repository incorporates code derived from or adapted from [OpenAI Whisper](https://github.com/openai/whisper), which is also distributed under the MIT License. The original OpenAI copyright and license notice are retained.
 
 The native x86 compatibility build uses [SIMDe](https://github.com/simd-everywhere/simde), distributed as a Git submodule under its own MIT license and copyright notices.
-
-We acknowledge the authors and contributors of OpenAI Whisper and the open-source libraries used in this research.
