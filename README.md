@@ -45,20 +45,33 @@ The default SIMD LayerNorm implementation uses an INT32-oriented accumulation st
 
 ## Evaluation Results
 
-I-Whisper was evaluated on the **LibriSpeech `test-other`** dataset using multiple Whisper model sizes.
+I-Whisper was evaluated on the **LibriSpeech `test-other`** dataset across multiple Whisper model sizes.
 
-Word Error Rate (WER, %, lower is better):
+### Filtered Evaluation
+
+The following results report Word Error Rate (WER, %, lower is better) under the **filtered evaluation protocol** for all three methods: FP32, Naive W8A8, and I-Whisper.
 
 | Method | Tiny | Base | Small | Medium | Large |
 |---|---:|---:|---:|---:|---:|
 | FP32 | 18.88 | 14.57 | 10.08 | 8.46 | 6.90 |
 | Naive W8A8 | 55.92 | 37.03 | 33.42 | 24.00 | 84.38 |
-| I-Whisper (filtered) | 25.23 | 19.36 | 13.98 | 10.89 | 12.98 |
-| I-Whisper (all-sample) | 26.86 | 20.58 | 30.99 | 11.34 | 18.33 |
+| **I-Whisper (Ours)** | **25.23** | **19.36** | **13.98** | **10.89** | **12.98** |
 
-The filtered results evaluate successfully decoded samples, whereas the all-sample results use the full evaluation set according to the corresponding experiment protocol. These results use different evaluation denominators and should not be treated as interchangeable.
+Under the filtered evaluation protocol, I-Whisper consistently achieves lower WER than Naive W8A8 across all five model sizes.
 
-The published research results above are distinct from the small-sample functional smoke tests described later in this README.
+The filtered evaluation excludes samples that do not satisfy the successful-decoding criterion. The included samples and evaluation denominators may differ across models or methods.
+
+### All-Sample Evaluation
+
+For completeness, we additionally report I-Whisper's WER over the full evaluation set, including samples excluded by the filtered protocol.
+
+| Method | Tiny | Base | Small | Medium | Large |
+|---|---:|---:|---:|---:|---:|
+| I-Whisper (All-sample) | 26.86 | 20.58 | 30.99 | 11.34 | 18.33 |
+
+**Evaluation note:** Filtered and all-sample results use different evaluation denominators and should not be directly compared. In particular, I-Whisper's all-sample WER should not be compared directly against the filtered FP32 or Naive W8A8 results.
+
+These research evaluation results are distinct from the small-sample functional smoke tests described later in this README.
 
 ## Repository Structure
 
@@ -131,6 +144,7 @@ env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL \
 Build the I-Whisper native extension:
 
 ```bash
+git submodule update --init i_whisper/kernels/csrc/simde
 python3 setup.py build_ext --inplace --force
 ```
 
@@ -153,7 +167,6 @@ The Raspberry Pi setup requires a compatible, separately installed CPU PyTorch b
 After preparing the validated Python environment:
 
 ```bash
-git submodule update --init i_whisper/kernels/csrc/simde
 python3 setup.py build_ext --inplace --force
 python3 -m pytest -q tests
 ```
