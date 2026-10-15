@@ -333,11 +333,27 @@ The recommended approach is to use the validated environment for the target plat
 
 Full WER reproducibility additionally depends on the model checkpoint, calibration data, dataset version, evaluation protocol, and decoding configuration.
 
-## Citation
+## Authors and Acknowledgments
 
-If you use I-Whisper in academic work, please cite the corresponding APCCAS 2026 paper.
+**Research and Implementation:** Jun-An Chen
 
-The final bibliographic entry will be added once its publication metadata is confirmed.
+**Affiliation:** Video and Communication System Design Lab,
+Department of Electrical Engineering,
+National Cheng Kung University, Taiwan.
+
+I-Whisper was primarily researched and developed by Jun-An Chen
+at National Cheng Kung University, based on OpenAI Whisper.
+
+We acknowledge the original OpenAI Whisper authors and contributors,
+as well as the developers of the open-source libraries used in this project.
+
+## Publication
+
+**Paper:** I-Whisper: Integer-Only Quantization for Whisper Inference and Deployment
+
+**Status:** Accepted for oral presentation at the 2026 IEEE Asia Pacific Conference on Circuits and Systems (APCCAS 2026).
+
+The official IEEE Xplore record, DOI, and BibTeX citation will be added once the conference proceedings are published.
 
 ## License and Acknowledgments
 
